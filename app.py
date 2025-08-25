@@ -10,30 +10,40 @@ import os
 st.set_page_config(page_title="Gas Dashboard", layout="wide")
 st.title("\U0001F4CA EUA Analytics Dashboard")
 
-# rendre la barre d'onglets scrollable si elle dépasse en largeur
+# --- rendre la barre d'onglets scrollable ET autoriser le retour à la ligne ---
 st.markdown("""
 <style>
+/* Autoriser le retour à la ligne si ça déborde */
 .stTabs [role="tablist"]{
-  overflow-x:auto !important;
-  white-space:nowrap !important;
+  display: flex; 
+  flex-wrap: wrap !important;
+  gap: .25rem .5rem;
 }
+/* Eviter que les tabs s'étirent */
 .stTabs [role="tab"]{
-  flex:0 0 auto !important;
+  flex: 0 0 auto !important;
+}
+/* Légère réduction de padding/texte pour gagner de la place */
+.stTabs [role="tab"] > div[data-testid="stMarkdownContainer"]{
+  font-size: 0.95rem;
+  padding: 0.2rem 0.6rem;
 }
 </style>
 """, unsafe_allow_html=True)
+
 
 # --- chemins robustes ---
 APP_DIR = Path(__file__).resolve().parent
 file_path = APP_DIR / "Gas storages.xlsx"   # évite les surprises de CWD
 
+# Onglets avec libellés courts (plus compacts)
 tabs = st.tabs([
-    "📦 Stocks",
-    "💰 Prix (EUA/TTF)",
-    "📈 Stratégies RSI / StochRSI",
-    "📊 Open Interest",
-    "🌡️ Temp & HDD",     # <-- déplacé ici
-    "⏩ Forward Curve"
+    "Stocks",          # tabs[0]
+    "Prix (EUA/TTF)",  # tabs[1]
+    "Strats RSI",      # tabs[2]
+    "Open Interest",   # tabs[3]
+    "Temp/HDD",        # tabs[4]  ⬅️  (ton onglet météo/HDD)
+    "Forward Curve"    # tabs[5]
 ])
 
 st.caption(f"Debug: {len(tabs)} onglets créés")
