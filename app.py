@@ -10,6 +10,12 @@ import os
 st.set_page_config(page_title="Gas Dashboard", layout="wide")
 st.title("\U0001F4CA EUA Analytics Dashboard")
 
+st.caption("RUN MARKER: vTempHDD-001")
+from pathlib import Path; import os
+st.caption("Script path: " + str(Path(__file__).resolve()))
+st.caption("CWD: " + os.getcwd())
+st.caption("Tabs count (debug): " + str(len(st.tabs if 'tabs' in globals() else [])))
+
 # --- rendre la barre d'onglets scrollable ET autoriser le retour à la ligne ---
 st.markdown("""
 <style>
