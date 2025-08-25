@@ -27,14 +27,13 @@ st.markdown("""
 APP_DIR = Path(__file__).resolve().parent
 file_path = APP_DIR / "Gas storages.xlsx"   # évite les surprises de CWD
 
-# 1) ➕ ajoute l’onglet
 tabs = st.tabs([
     "📦 Stocks",
     "💰 Prix (EUA/TTF)",
     "📈 Stratégies RSI / StochRSI",
     "📊 Open Interest",
-    "⏩ Forward Curve",
-    "🌡️ Temp & HDD"   # <— nouvel onglet
+    "🌡️ Temp & HDD",     # <-- déplacé ici
+    "⏩ Forward Curve"
 ])
 
 st.caption(f"Debug: {len(tabs)} onglets créés")
@@ -315,7 +314,7 @@ with tabs[3]:
 
 
 # === 5. Onglet FORWARD CURVE ===
-with tabs[4]:
+with tabs[5]:
     st.header("EUA Forward Curve")
 
     file_path_fwd = APP_DIR / "EUA OI & forward.xlsx"
@@ -350,7 +349,7 @@ with tabs[4]:
         st.plotly_chart(fig_fwd, use_container_width=True)
 
 # 2) 🌡️ Onglet TEMP & HDD — organisé par pays
-with tabs[5]:
+with tabs[4]:
     st.header("Températures saisonnières & HDD mensuels")
     st.caption("🧪 Debug: l’onglet est bien monté")
 
