@@ -10,6 +10,19 @@ import os
 st.set_page_config(page_title="Gas Dashboard", layout="wide")
 st.title("\U0001F4CA EUA Analytics Dashboard")
 
+# rendre la barre d'onglets scrollable si elle dépasse en largeur
+st.markdown("""
+<style>
+.stTabs [role="tablist"]{
+  overflow-x:auto !important;
+  white-space:nowrap !important;
+}
+.stTabs [role="tab"]{
+  flex:0 0 auto !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
 # --- chemins robustes ---
 APP_DIR = Path(__file__).resolve().parent
 file_path = APP_DIR / "Gas storages.xlsx"   # évite les surprises de CWD
@@ -24,6 +37,7 @@ tabs = st.tabs([
     "🌡️ Temp & HDD"   # <— nouvel onglet
 ])
 
+st.caption(f"Debug: {len(tabs)} onglets créés")
 
 # === 1. Onglet STOCKS ===
 with tabs[0]:
