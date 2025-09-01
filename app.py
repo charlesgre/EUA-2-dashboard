@@ -534,7 +534,6 @@ with tabs[6]:
 
     # --- utilitaires ---
     def _make_unique(names):
-        """Entêtes non vides et uniques (utile pour AgGrid/Excel)."""
         seen, out = {}, []
         for n in names:
             key = "" if n is None else str(n)
@@ -552,19 +551,14 @@ with tabs[6]:
 
     @st.cache_data(show_spinner=False)
     def load_auctions_dataframe(xlsx_path: Path, file_version: str) -> pd.DataFrame:
-        """
-        Lit la 1re feuille, garde lignes Excel 5–17 et 55–93 (entêtes = ligne 1),
-        remplace les 'N/A' par vide, renvoie un DataFrame propre.
-        """
         df = pd.read_excel(xlsx_path, sheet_name=0, header=0)
-        part1 = df.iloc[3:16]   # 5..17
-        part2 = df.iloc[53:92]  # 55..93
+        part1 = df.iloc[3:16]    # Excel 5..17
+        part2 = df.iloc[53:92]   # Excel 55..93
         out = pd.concat([part1, part2], axis=0).copy()
         out = out.replace({"N/A": "", "n/a": "", "#N/A": ""}).replace({np.nan: ""})
         out.columns = _make_unique(out.columns)
         return out
 
-    # --- source de données : fichier du projet ---
     if not auctions_path.exists():
         st.error(f"Fichier introuvable : {auctions_path}")
         st.stop()
@@ -593,8 +587,9 @@ with tabs[6]:
         with c2:
             use_colors = st.checkbox("Couleurs conditionnelles", True)
 
+        # Certaines versions exposent JsCode
         try:
-            from st_aggrid import JsCode  # certaines versions seulement
+            from st_aggrid import JsCode  # type: ignore
         except Exception:
             JsCode = None
 
@@ -606,8 +601,7 @@ with tabs[6]:
             "Last","Vol","Cover Ratio","Mkt Diff","Total Bids (Volume)",
             "Min","Max","Mean","Median","Sel. Bids","Tot Bids"
         ]
-        present_nums = [c for c in num_candidates if c in df_auctions.columns]
-        for col in present_nums:
+        for col in [c for c in num_candidates if c in df_auctions.columns]:
             gb.configure_column(
                 col,
                 type=["numericColumn","numberColumnFilter","customNumericFormat"],
@@ -642,19 +636,24 @@ with tabs[6]:
         grid_opts["pagination"] = True
         grid_opts["paginationPageSize"] = 20
 
-        # autosize si dispo suivant la version
-        extra_kwargs = {}
-        if ColumnsAutoSizeMode is not None:
-            extra_kwargs["columns_auto_size_mode"] = ColumnsAutoSizeMode.FIT_CONTENTS
-
-        AgGrid(
-            df_auctions,
+        # kwargs optionnels selon la version
+        ag_kwargs = dict(
             gridOptions=grid_opts,
             height=560,
             fit_columns_on_grid_load=True,
-            theme="balham",  # 'streamlit','alpine','balham','material'
-            **extra_kwargs,
         )
+        if ColumnsAutoSizeMode is not None:
+            ag_kwargs["columns_auto_size_mode"] = ColumnsAutoSizeMode.FIT_CONTENTS
+
+        # Ajouter "theme" seulement si supporté
+        try:
+            import inspect
+            if "theme" in inspect.signature(AgGrid).parameters:
+                ag_kwargs["theme"] = "balham"
+        except Exception:
+            pass
+
+        AgGrid(df_auctions, **ag_kwargs)
 
     else:
         # Fallback sans AgGrid : stylage via Pandas Styler (compatible)
@@ -683,7 +682,7 @@ with tabs[6]:
         if "Cover Ratio" in df_auctions.columns:
             styled = styled.background_gradient(subset=["Cover Ratio"], cmap="Greens")
 
-        # st.dataframe ignore souvent le CSS du Styler -> on affiche le HTML rendu
+        # st.dataframe ne rend pas toujours le CSS du Styler -> HTML direct
         st.markdown(styled.to_html(), unsafe_allow_html=True)
 
     # --- exports (toujours affichés) ---
@@ -707,7 +706,6 @@ with tabs[6]:
         use_container_width=True,
     )
 
-    # --- bouton rafraîchissement ---
     if st.button("🔄 Rafraîchir les données (Auctions)"):
         load_auctions_dataframe.clear()
         st.rerun()
