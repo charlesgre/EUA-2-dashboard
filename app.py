@@ -6,6 +6,24 @@ from datetime import datetime
 import plotly.graph_objects as go
 from pathlib import Path
 import os
+import io, hashlib
+
+# Optionnel : AG Grid pour filtres/tri type Excel
+HAS_AGGRID = False
+ColumnsAutoSizeMode = None  # par défaut (certaines versions ne l'exposent pas)
+
+try:
+    from st_aggrid import AgGrid, GridOptionsBuilder
+    try:
+        # Présent dans certaines versions seulement
+        from st_aggrid import ColumnsAutoSizeMode  # type: ignore
+    except Exception:
+        ColumnsAutoSizeMode = None
+    HAS_AGGRID = True
+except Exception as e:
+    HAS_AGGRID = False
+    AGGRID_IMPORT_ERROR = str(e)  # utile pour debug si besoin
+
 
 st.set_page_config(page_title="Gas Dashboard", layout="wide")
 st.title("\U0001F4CA EUA Analytics Dashboard")
@@ -41,15 +59,16 @@ st.markdown("""
 # --- chemins robustes ---
 APP_DIR = Path(__file__).resolve().parent
 file_path = APP_DIR / "Gas storages.xlsx"   # évite les surprises de CWD
+auctions_path = APP_DIR / "Auctions EUA.xlsx"
 
-# Onglets avec libellés courts (plus compacts)
 tabs = st.tabs([
     "Stocks",          # tabs[0]
     "Prix (EUA/TTF)",  # tabs[1]
     "Strats RSI",      # tabs[2]
     "Open Interest",   # tabs[3]
-    "Temp/HDD",        # tabs[4]  ⬅️  (ton onglet météo/HDD)
-    "Forward Curve"    # tabs[5]
+    "Temp/HDD",        # tabs[4]
+    "Forward Curve",   # tabs[5]
+    "Auctions"         # tabs[6]  ⬅️ nouveau
 ])
 
 st.caption(f"Debug: {len(tabs)} onglets créés")
@@ -508,3 +527,103 @@ with tabs[4]:
     except Exception as e:
         st.error("Une erreur a empêché l’affichage de l’onglet.")
         st.exception(e)
+
+# === 6. Onglet AUCTIONS ===
+with tabs[6]:
+    st.header("Auctions")
+
+    # --- utilitaires ---
+    def _make_unique(names):
+        """Entêtes non vides et uniques (utile pour AgGrid/Excel)."""
+        seen, out = {}, []
+        for n in names:
+            key = "" if n is None else str(n)
+            key = key if key.strip() != "" else "Column"
+            if key in seen:
+                seen[key] += 1
+                out.append(f"{key}_{seen[key]}")
+            else:
+                seen[key] = 0
+                out.append(key)
+        return out
+
+    def _file_version(p: Path) -> str:
+        return f"{int(os.path.getmtime(p))}:{p.stat().st_size}"
+
+    @st.cache_data(show_spinner=False)
+    def load_auctions_dataframe(xlsx_path: Path, file_version: str) -> pd.DataFrame:
+        """
+        Lit la 1re feuille, garde lignes Excel 5–17 et 55–93 (entêtes = ligne 1),
+        remplace les 'N/A' par vide, renvoie un DataFrame propre.
+        """
+        df = pd.read_excel(xlsx_path, sheet_name=0, header=0)
+
+        # Excel 5..17 -> iloc 3..16 ; Excel 55..93 -> iloc 53..92
+        part1 = df.iloc[3:16]
+        part2 = df.iloc[53:92]
+        out = pd.concat([part1, part2], axis=0).copy()
+
+        # Masquer les N/A visibles
+        out = out.replace({"N/A": "", "n/a": "", "#N/A": ""}).replace({np.nan: ""})
+
+        # Entêtes uniques
+        out.columns = _make_unique(out.columns)
+        return out
+
+    # --- source de données : fichier du projet ---
+    if not auctions_path.exists():
+        st.error(f"Fichier introuvable : {auctions_path}")
+        st.stop()
+
+    df_auctions = load_auctions_dataframe(auctions_path, _file_version(auctions_path))
+    st.caption(f"Lignes affichées : 5–17 et 55–93 (entêtes = ligne 1).")
+
+    # --- rendu dynamique ---
+    if 'HAS_AGGRID' in globals() and HAS_AGGRID:
+        gb = GridOptionsBuilder.from_dataframe(df_auctions)
+        gb.configure_default_column(filter=True, sortable=True, resizable=True)
+        gb.configure_grid_options(animateRows=True, rowSelection="single")
+        grid_opts = gb.build()
+
+        # columns_auto_size_mode uniquement si dispo
+        extra_kwargs = {}
+        if ColumnsAutoSizeMode is not None:
+            extra_kwargs["columns_auto_size_mode"] = ColumnsAutoSizeMode.FIT_CONTENTS
+
+        AgGrid(
+            df_auctions,
+            gridOptions=grid_opts,
+            height=520,
+            fit_columns_on_grid_load=True,
+            **extra_kwargs,
+        )
+    else:
+        st.info("Astuce : installe `streamlit-aggrid` pour activer les filtres par colonne.")
+        st.dataframe(df_auctions, use_container_width=True, hide_index=True)
+
+    # --- exports (hors if/else, pour qu'ils marchent dans tous les cas) ---
+    csv_bytes = df_auctions.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "Télécharger (CSV)",
+        data=csv_bytes,
+        file_name="auctions_filtre.csv",
+        mime="text/csv",
+        use_container_width=True,
+    )
+
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        df_auctions.to_excel(writer, index=False, sheet_name="auctions")
+    st.download_button(
+        "Télécharger (Excel)",
+        data=buf.getvalue(),
+        file_name="auctions_filtre.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+    )
+
+
+    # bouton rafraîchissement
+    if st.button("🔄 Rafraîchir les données (Auctions)"):
+        load_auctions_dataframe.clear()
+        st.rerun()
