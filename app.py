@@ -669,9 +669,10 @@ with tabs[6]:
         AgGrid(df_auctions, **ag_kwargs)
 
     else:
-        # Fallback sans AgGrid : on repart d'une copie typée
+        # -------- Fallback sans AgGrid : Styler sans matplotlib --------
         df_style = df_auctions.copy()
 
+        # Forcer types numériques si présents
         num_candidates = [
             "Last","Vol","Cover Ratio","Mkt Diff","Total Bids (Volume)",
             "Min","Max","Mean","Median","Sel. Bids","Tot Bids"
@@ -682,10 +683,20 @@ with tabs[6]:
         fmt = {c: "{:,.2f}".format for c in df_style.select_dtypes(include=[np.number]).columns}
 
         def highlight_empty(row):
+            # fond blanc pour NaN/vides
             styles = []
             for v in row:
                 styles.append("background-color: white;" if pd.isna(v) or (isinstance(v, str) and v.strip() == "") else "")
             return styles
+
+        # Dégradé custom (hex mix) pour Cover Ratio sans matplotlib
+        def _mix_hex(c1, c2, t: float) -> str:
+            # c1 et c2 comme "#RRGGBB", t in [0,1]
+            c1 = c1.lstrip("#"); c2 = c2.lstrip("#")
+            r1,g1,b1 = int(c1[0:2],16), int(c1[2:4],16), int(c1[4:6],16)
+            r2,g2,b2 = int(c2[0:2],16), int(c2[2:4],16), int(c2[4:6],16)
+            r = int(r1 + (r2-r1)*t); g = int(g1 + (g2-g1)*t); b = int(b1 + (b2-b1)*t)
+            return f"#{r:02x}{g:02x}{b:02x}"
 
         styled = (
             df_style
@@ -698,11 +709,36 @@ with tabs[6]:
             .apply(highlight_empty, axis=1)
         )
 
+        # Applique un dégradé vert custom à Cover Ratio s'il existe
         if "Cover Ratio" in df_style.columns:
-            styled = styled.background_gradient(subset=["Cover Ratio"], cmap="Greens")
+            s = df_style["Cover Ratio"]
+            vmin = float(np.nanmin(s.values)) if np.isfinite(s).any() else 0.0
+            vmax = float(np.nanmax(s.values)) if np.isfinite(s).any() else 1.0
+            if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin == vmax:
+                vmin, vmax = 0.0, 1.0  # évite division par zéro
+
+            # couleurs du dégradé (clair -> foncé)
+            c_lo = "#e7f6e7"
+            c_hi = "#0a662a"
+
+            def cover_ratio_styles(col: pd.Series):
+                styles = []
+                for v in col:
+                    if pd.isna(v):
+                        styles.append("")  # pas de style
+                    else:
+                        t = (float(v) - vmin) / (vmax - vmin)
+                        if t < 0: t = 0.0
+                        if t > 1: t = 1.0
+                        bg = _mix_hex(c_lo, c_hi, t)
+                        styles.append(f"background-color: {bg}; color: #0b3d0b;")
+                return styles
+
+            styled = styled.apply(cover_ratio_styles, subset=["Cover Ratio"], axis=0)
 
         # Affiche le HTML stylé (st.dataframe ignore souvent le CSS du Styler)
         st.markdown(styled.to_html(), unsafe_allow_html=True)
+
 
 
     # --- exports (toujours affichés) ---
