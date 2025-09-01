@@ -578,28 +578,112 @@ with tabs[6]:
     df_auctions = load_auctions_dataframe(auctions_path, _file_version(auctions_path))
     st.caption(f"Lignes affichées : 5–17 et 55–93 (entêtes = ligne 1).")
 
-    # --- rendu dynamique ---
-    if 'HAS_AGGRID' in globals() and HAS_AGGRID:
-        gb = GridOptionsBuilder.from_dataframe(df_auctions)
-        gb.configure_default_column(filter=True, sortable=True, resizable=True)
-        gb.configure_grid_options(animateRows=True, rowSelection="single")
-        grid_opts = gb.build()
+# --- rendu dynamique (beau & propre) ---
+if 'HAS_AGGRID' in globals() and HAS_AGGRID:
+    # CSS léger pour header + zébrage
+    st.markdown("""
+    <style>
+    .ag-theme-balham .ag-header {
+        background: linear-gradient(180deg,#f7f9fc 0%,#eef3fb 100%);
+        font-weight: 600;
+        border-bottom: 1px solid #dbe4f0;
+    }
+    .ag-theme-balham .ag-header-cell-label { color:#334155; }
+    .ag-theme-balham .ag-row:nth-child(even) .ag-cell { background: #fafafa; }
+    .ag-theme-balham .ag-cell { line-height: 1.15rem; }
+    </style>
+    """, unsafe_allow_html=True)
 
-        # columns_auto_size_mode uniquement si dispo
-        extra_kwargs = {}
-        if ColumnsAutoSizeMode is not None:
-            extra_kwargs["columns_auto_size_mode"] = ColumnsAutoSizeMode.FIT_CONTENTS
+    # Barre de recherche rapide + switch couleurs
+    c1, c2 = st.columns([3,1])
+    with c1:
+        quick = st.text_input("🔎 Rechercher (quick filter)", "")
+    with c2:
+        use_colors = st.checkbox("Couleurs conditionnelles", True)
 
-        AgGrid(
-            df_auctions,
-            gridOptions=grid_opts,
-            height=520,
-            fit_columns_on_grid_load=True,
-            **extra_kwargs,
+    # Certaines versions exposent JsCode ; on l'importe si dispo
+    try:
+        from st_aggrid import JsCode  # type: ignore
+    except Exception:
+        JsCode = None
+
+    gb = GridOptionsBuilder.from_dataframe(df_auctions)
+    gb.configure_default_column(filter=True, sortable=True, resizable=True, headerClass="bold-header")
+
+    # Alignement/formatage FR pour les colonnes numériques
+    num_candidates = [
+        "Last","Vol","Cover Ratio","Mkt Diff","Total Bids (Volume)",
+        "Min","Max","Mean","Median","Sel. Bids","Tot Bids"
+    ]
+    present_nums = [c for c in num_candidates if c in df_auctions.columns]
+    for col in present_nums:
+        gb.configure_column(
+            col,
+            type=["numericColumn","numberColumnFilter","customNumericFormat"],
+            valueFormatter="(x==null || x==='') ? '' : Intl.NumberFormat('fr-FR', {maximumFractionDigits: 2}).format(x)"
         )
-    else:
-        st.info("Astuce : installe `streamlit-aggrid` pour activer les filtres par colonne.")
-        st.dataframe(df_auctions, use_container_width=True, hide_index=True)
+
+    # Date au format FR
+    if "Date" in df_auctions.columns:
+        gb.configure_column("Date", valueFormatter="value ? new Date(value).toLocaleDateString('fr-FR') : ''")
+
+    # Gras sur la colonne Last (si présente)
+    if "Last" in df_auctions.columns and JsCode:
+        gb.configure_column("Last", cellStyle=JsCode("""
+            function(p){ if(p.value==null) return {}; return {'fontWeight':'700'}; }
+        """))
+
+    # Couleurs conditionnelles sur Cover Ratio (si demandé)
+    if use_colors and "Cover Ratio" in df_auctions.columns and JsCode:
+        gb.configure_column("Cover Ratio", cellStyle=JsCode("""
+            function(p){
+                if(p.value==null) return {};
+                if(p.value >= 1.5)  return {'background-color':'#e7f6e7','color':'#0a662a','font-weight':'600'};
+                if(p.value <  1.2)  return {'background-color':'#fdecea','color':'#b71c1c','font-weight':'600'};
+                return {};
+            }
+        """))
+
+    # Options de grille
+    grid_opts = gb.build()
+    grid_opts["quickFilterText"]   = quick
+    grid_opts["animateRows"]       = True
+    grid_opts["rowHeight"]         = 32
+    grid_opts["pagination"]        = True
+    grid_opts["paginationPageSize"]= 20
+
+    # autosize si dispo selon la version
+    extra_kwargs = {}
+    if ColumnsAutoSizeMode is not None:
+        extra_kwargs["columns_auto_size_mode"] = ColumnsAutoSizeMode.FIT_CONTENTS
+
+    AgGrid(
+        df_auctions,
+        gridOptions=grid_opts,
+        height=560,
+        fit_columns_on_grid_load=True,
+        theme="balham",   # thèmes: 'streamlit','alpine','balham','material'
+        **extra_kwargs,
+    )
+
+else:
+    # Fallback sans AgGrid : stylage via Pandas Styler
+    fmt = {c: "{:,.2f}".format for c in df_auctions.select_dtypes(include=[np.number]).columns}
+    styled = (
+        df_auctions
+        .style
+        .format(fmt, na_rep="")
+        .set_table_styles([
+            {"selector":"th.col_heading","props":[("background","#eef3fb"),("font-weight","bold"),("color","#334155"),("border-bottom","1px solid #dbe4f0")]},
+            {"selector":"thead","props":[("border-bottom","1px solid #dbe4f0")]},
+        ])
+        .highlight_null(null_color="white")
+    )
+    # Teinte douce sur Cover Ratio si présent
+    if "Cover Ratio" in df_auctions.columns:
+        styled = styled.background_gradient(subset=["Cover Ratio"], cmap="Greens")
+    st.dataframe(styled, use_container_width=True, hide_index=True)
+
 
     # --- exports (hors if/else, pour qu'ils marchent dans tous les cas) ---
     csv_bytes = df_auctions.to_csv(index=False).encode("utf-8")
