@@ -555,7 +555,20 @@ with tabs[6]:
         part1 = df.iloc[3:16]    # Excel 5..17
         part2 = df.iloc[53:92]   # Excel 55..93
         out = pd.concat([part1, part2], axis=0).copy()
-        out = out.replace({"N/A": "", "n/a": "", "#N/A": ""}).replace({np.nan: ""})
+        # Laisse les NaN en NaN (ils s'afficheront vides via na_rep / AgGrid)
+        out = out.replace({"N/A": np.nan, "n/a": np.nan, "#N/A": np.nan})
+
+        # Typage : force les colonnes numériques en float, et la date si présente
+        num_candidates = [
+            "Last","Vol","Cover Ratio","Mkt Diff","Total Bids (Volume)",
+            "Min","Max","Mean","Median","Sel. Bids","Tot Bids"
+        ]
+        for col in [c for c in num_candidates if c in out.columns]:
+            out[col] = pd.to_numeric(out[col], errors="coerce")
+
+        if "Date" in out.columns:
+            out["Date"] = pd.to_datetime(out["Date"], errors="coerce")
+
         out.columns = _make_unique(out.columns)
         return out
 
@@ -656,34 +669,41 @@ with tabs[6]:
         AgGrid(df_auctions, **ag_kwargs)
 
     else:
-        # Fallback sans AgGrid : stylage via Pandas Styler (compatible)
-        fmt = {c: "{:,.2f}".format for c in df_auctions.select_dtypes(include=[np.number]).columns}
+        # Fallback sans AgGrid : on repart d'une copie typée
+        df_style = df_auctions.copy()
+
+        num_candidates = [
+            "Last","Vol","Cover Ratio","Mkt Diff","Total Bids (Volume)",
+            "Min","Max","Mean","Median","Sel. Bids","Tot Bids"
+        ]
+        for col in [c for c in num_candidates if c in df_style.columns]:
+            df_style[col] = pd.to_numeric(df_style[col], errors="coerce")
+
+        fmt = {c: "{:,.2f}".format for c in df_style.select_dtypes(include=[np.number]).columns}
 
         def highlight_empty(row):
-            # fond blanc pour NaN/vides (remplace highlight_null)
             styles = []
             for v in row:
-                if (isinstance(v, float) and pd.isna(v)) or (isinstance(v, str) and v.strip() == ""):
-                    styles.append("background-color: white;")
-                else:
-                    styles.append("")
+                styles.append("background-color: white;" if pd.isna(v) or (isinstance(v, str) and v.strip() == "") else "")
             return styles
 
         styled = (
-            df_auctions
+            df_style
             .style
-            .format(fmt, na_rep="")
+            .format(fmt, na_rep="")  # affiche vide pour NaN
             .set_table_styles([
                 {"selector":"th.col_heading","props":[("background","#eef3fb"),("font-weight","bold"),("color","#334155"),("border-bottom","1px solid #dbe4f0")]},
                 {"selector":"thead","props":[("border-bottom","1px solid #dbe4f0")]},
             ])
             .apply(highlight_empty, axis=1)
         )
-        if "Cover Ratio" in df_auctions.columns:
+
+        if "Cover Ratio" in df_style.columns:
             styled = styled.background_gradient(subset=["Cover Ratio"], cmap="Greens")
 
-        # st.dataframe ne rend pas toujours le CSS du Styler -> HTML direct
+        # Affiche le HTML stylé (st.dataframe ignore souvent le CSS du Styler)
         st.markdown(styled.to_html(), unsafe_allow_html=True)
+
 
     # --- exports (toujours affichés) ---
     csv_bytes = df_auctions.to_csv(index=False).encode("utf-8")
