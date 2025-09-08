@@ -77,147 +77,163 @@ st.caption(f"Debug: {len(tabs)} onglets créés")
 with tabs[0]:
     st.header("Stockages de gaz - par pays")
 
+    # Paramètres
     start_year = 2020
     end_year = 2025
 
     columns_mapping = [
-        'Date', 'Europe Gas Storage (TWh)', 'US DOE estimated storage',
-        'UK Gas Storage (TWh)', 'Germany Gas Storage (TWh)', 'Netherlands Gas Storage (TWh)'
+        "Date",
+        "Europe Gas Storage (TWh)",
+        "US DOE estimated storage",
+        "UK Gas Storage (TWh)",
+        "Germany Gas Storage (TWh)",
+        "Netherlands Gas Storage (TWh)",
     ]
 
-    colors = {2020:'blue', 2021:'orange', 2022:'purple', 2023:'yellow', 2024:'green', 2025:'red'}
+    country_map = {
+        "Europe Gas Storage (TWh)": "Europe",
+        "US DOE estimated storage": "US",
+        "UK Gas Storage (TWh)": "UK",
+        "Germany Gas Storage (TWh)": "Germany",
+        "Netherlands Gas Storage (TWh)": "Netherlands",
+    }
 
-    # bouton manuel si besoin
-    if st.button("🔄 Forcer la mise à jour des données"):
+    # Option couleurs par année (facultatif)
+    colors = {2020: "blue", 2021: "orange", 2022: "purple", 2023: "yellow", 2024: "green", 2025: "red"}
+
+    # Bouton de rafraîchissement manuel
+    if st.button("🔄 Forcer la mise à jour des données", key="refresh_stocks"):
         st.cache_data.clear()
         st.rerun()
 
-    # === clé de cache liée au fichier ===
+    # --- Chargement + cache (clé = mtime fichier) ---
     @st.cache_data(show_spinner=False)
-    def load_stock_data(xlsx_path: Path, file_version: float):
-        # file_version = os.path.getmtime(xlsx_path) -> utilisé pour invalider le cache
+    def load_stock_data(xlsx_path: Path, file_version: float) -> pd.DataFrame:
         df = pd.read_excel(xlsx_path, sheet_name="Stocks", header=None, skiprows=6)
         df = df.iloc[:, :6]
         df.columns = columns_mapping
-        df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
-        df = df.dropna(subset=['Date'])
-        # normalisation numérique
+        df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+        df = df.dropna(subset=["Date"])
         for c in columns_mapping[1:]:
-            df[c] = pd.to_numeric(df[c], errors='coerce')
+            df[c] = pd.to_numeric(df[c], errors="coerce")
         return df.dropna()
 
+    # file_path doit déjà être défini plus haut dans ton script
     file_mtime = os.path.getmtime(file_path)
     df_stock = load_stock_data(file_path, file_mtime)
 
-    # petite info de contrôle
+    # Info contrôle
     st.caption(f"Dernière date lue : **{df_stock['Date'].max().date()}**  (mtime: {int(file_mtime)})")
 
-    country_map = {
-        'Europe Gas Storage (TWh)': 'Europe',
-        'US DOE estimated storage': 'US',
-        'UK Gas Storage (TWh)': 'UK',
-        'Germany Gas Storage (TWh)': 'Germany',
-        'Netherlands Gas Storage (TWh)': 'Netherlands'
-    }
-    selected_country = st.selectbox("Choisir un pays :", list(country_map.keys()))
+    # Sélecteur pays
+    selected_country = st.selectbox("Choisir un pays :", list(country_map.keys()), key="stocks_country")
 
-# --- Série pays (typage, nettoyage) ---
-series = df_stock[['Date', selected_country]].copy()
-series = series.dropna(subset=[selected_country])               # on ne garde que les dates avec valeur
-series['Value'] = pd.to_numeric(series[selected_country], errors='coerce')
-series = series.dropna(subset=['Value'])
-series = series[series['Date'].dt.year >= start_year].copy()
+    # --- Série pays (typage, nettoyage) ---
+    series = df_stock[["Date", selected_country]].copy()
+    series = series.dropna(subset=[selected_country])
+    series["Value"] = pd.to_numeric(series[selected_country], errors="coerce")
+    series = series.dropna(subset=["Value"])
+    series = series[series["Date"].dt.year >= start_year].copy()
 
-# Info utile : dernière date dispo pour CE pays
-last_country_date = series['Date'].max()
-st.caption(f"Dernière date disponible ({country_map[selected_country]}) : **{last_country_date.date()}**")
+    if series.empty:
+        st.warning("Aucune donnée disponible pour ce pays/période.")
+        st.stop()
 
-# --- Calendrier 365 jours (on enlève 29/02 et on compresse les jours qui suivent en année bissextile) ---
-series['month']   = series['Date'].dt.month
-series['day']     = series['Date'].dt.day
-series['is_leap'] = series['Date'].dt.is_leap_year
+    # Info utile : dernière date disponible pour CE pays
+    last_country_date = series["Date"].max()
+    st.caption(f"Dernière date disponible ({country_map[selected_country]}) : **{last_country_date.date()}**")
 
-# 1) on enlève le 29/02
-series = series[~((series['month'] == 2) & (series['day'] == 29))].copy()
+    # --- Calendrier 365 jours (supprime 29/02 et compresse après fév. en bissextile) ---
+    series["month"] = series["Date"].dt.month
+    series["day"] = series["Date"].dt.day
+    series["is_leap"] = series["Date"].dt.is_leap_year
 
-# 2) day-of-year compressé (entier)
-series['DOY365'] = series['Date'].dt.dayofyear - (
-    ((series['is_leap']) & (series['month'] > 2)).astype(int)
-)
-series['DOY365'] = series['DOY365'].astype(int)
+    # 1) enlève le 29/02
+    series = series[~((series["month"] == 2) & (series["day"] == 29))].copy()
 
-# ---------- Bande min/max + moyenne 2020–2024 (365j) ----------
-range_data = series[series['Date'].dt.year <= 2024].copy()
+    # 2) DOY compressé à 365
+    series["DOY365"] = series["Date"].dt.dayofyear - (((series["is_leap"]) & (series["month"] > 2)).astype(int))
+    series["DOY365"] = series["DOY365"].astype(int)
 
-def year_vector_365(df_year: pd.DataFrame) -> np.ndarray:
-    # moyenne par jour, puis réindex 1..365 et interpolation pour lisser les trous
-    y = (df_year.groupby('DOY365', as_index=True)['Value'].mean()
-         .reindex(np.arange(1, 366))
-         .interpolate(limit_direction='both'))
-    return y.values
+    # ---------- Bande min/max + moyenne 2020–2024 ----------
+    range_data = series[series["Date"].dt.year <= 2024].copy()
 
-all_years = []
-for yr in range(2020, 2025):
-    ydf = range_data[range_data['Date'].dt.year == yr]
-    all_years.append(year_vector_365(ydf) if not ydf.empty else np.full(365, np.nan))
+    def year_vector_365(df_year: pd.DataFrame) -> np.ndarray:
+        y = (
+            df_year.groupby("DOY365", as_index=True)["Value"]
+            .mean()
+            .reindex(np.arange(1, 366))
+            .interpolate(limit_direction="both")
+        )
+        return y.values
 
-all_years_array = np.vstack(all_years)
-min_vals  = np.nanmin(all_years_array, axis=0)
-max_vals  = np.nanmax(all_years_array, axis=0)
-mean_vals = np.nanmean(all_years_array, axis=0)
+    all_years = []
+    for yr in range(2020, 2025):
+        ydf = range_data[range_data["Date"].dt.year == yr]
+        all_years.append(year_vector_365(ydf) if not ydf.empty else np.full(365, np.nan))
 
-full_doy = np.arange(1, 366)
+    all_years_array = np.vstack(all_years)
+    min_vals = np.nanmin(all_years_array, axis=0)
+    max_vals = np.nanmax(all_years_array, axis=0)
+    mean_vals = np.nanmean(all_years_array, axis=0)
 
-# Ticks = 1er de chaque mois (année non bissextile)
-mois       = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
-mois_debut = [pd.Timestamp(2021, m, 1).dayofyear for m in range(1, 13)]
+    full_doy = np.arange(1, 366)
 
-# ---------- Figure ----------
-fig = go.Figure()
+    # Ticks = 1er de chaque mois (année non bissextile)
+    mois = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    mois_debut = [pd.Timestamp(2021, m, 1).dayofyear for m in range(1, 13)]
 
-# Bande min-max
-fig.add_trace(go.Scatter(
-    x=full_doy, y=min_vals, mode='lines', line=dict(color='lightgray'), showlegend=False
-))
-fig.add_trace(go.Scatter(
-    x=full_doy, y=max_vals, mode='lines', fill='tonexty',
-    line=dict(color='lightgray'), name='Min-Max 2020–2024',
-    fillcolor='rgba(128,128,128,0.3)'
-))
-# Moyenne
-fig.add_trace(go.Scatter(
-    x=full_doy, y=mean_vals, mode='lines', name='Moyenne 2020–2024',
-    line=dict(color='black', dash='dash')
-))
+    # ---------- Figure ----------
+    fig = go.Figure()
 
-# Courbes par année (triées par DOY, pour éviter les ruptures visuelles)
-for yr in range(start_year, end_year + 1):
-    ydf = series[series['Date'].dt.year == yr].copy()
-    if not ydf.empty:
-        ydf = ydf.sort_values('DOY365')                    # ✅ tri
-        fig.add_trace(go.Scatter(
-            x=ydf['DOY365'], y=ydf['Value'],
-            mode='lines', name=str(yr),
-            line=dict(width=2 if yr >= 2023 else 1),
-            opacity=1.0 if yr >= 2023 else 0.4
-        ))
+    # Bande min-max
+    fig.add_trace(
+        go.Scatter(x=full_doy, y=min_vals, mode="lines", line=dict(color="lightgray"), showlegend=False)
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=full_doy,
+            y=max_vals,
+            mode="lines",
+            fill="tonexty",
+            line=dict(color="lightgray"),
+            name="Min-Max 2020–2024",
+            fillcolor="rgba(128,128,128,0.3)",
+        )
+    )
+    # Moyenne
+    fig.add_trace(
+        go.Scatter(
+            x=full_doy, y=mean_vals, mode="lines", name="Moyenne 2020–2024", line=dict(color="black", dash="dash")
+        )
+    )
 
-fig.update_layout(
-    title=f"{country_map[selected_country]} - Stockage de gaz (TWh)",
-    xaxis=dict(
-        title="Mois",
-        tickmode='array',
-        tickvals=mois_debut,
-        ticktext=mois,
-        range=[1, 365]  # démarre pile au 1er janvier
-    ),
-    yaxis_title="TWh",
-    legend=dict(orientation="h"),
-    margin=dict(l=40, r=40, t=50, b=40), height=500
-)
+    # Courbes par année (triées par DOY, pour éviter les ruptures visuelles)
+    for yr in range(start_year, end_year + 1):
+        ydf = series[series["Date"].dt.year == yr].copy()
+        if not ydf.empty:
+            ydf = ydf.sort_values("DOY365")
+            fig.add_trace(
+                go.Scatter(
+                    x=ydf["DOY365"],
+                    y=ydf["Value"],
+                    mode="lines",
+                    name=str(yr),
+                    line=dict(width=2 if yr >= 2023 else 1, color=colors.get(yr, None)),
+                    opacity=1.0 if yr >= 2023 else 0.4,
+                )
+            )
 
-st.plotly_chart(fig, use_container_width=True)
+    fig.update_layout(
+        title=f"{country_map[selected_country]} - Stockage de gaz (TWh)",
+        xaxis=dict(title="Mois", tickmode="array", tickvals=mois_debut, ticktext=mois, range=[1, 365]),
+        yaxis_title="TWh",
+        legend=dict(orientation="h"),
+        margin=dict(l=40, r=40, t=50, b=40),
+        height=500,
+    )
 
+    st.plotly_chart(fig, use_container_width=True)
 
 
 # === 2. Onglet PRIX ===
