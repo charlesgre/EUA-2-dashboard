@@ -457,13 +457,13 @@ with tabs[4]:
     st.caption("🧪 Debug: l’onglet est bien monté")
 
     try:
-        # ---------- Chargement des données ----------
-        hdd_file = APP_DIR / "HDD EUA.xlsx"
+        # ---------- Fichier ----------
+        hdd_file = APP_DIR / "HDD EUA.xlsx"   # ⚠️ le fichier doit être déposé à côté du script
         if not hdd_file.exists():
             st.error(f"Fichier introuvable : {hdd_file}")
             st.stop()
 
-        # mapping des colonnes (feuille "Historical temp & HDD")
+        # ---------- Mappings pour la feuille 'Historical temp & HDD' (colonnes) ----------
         temp_cols = {
             "France": "Last Price",
             "UK": "Last Price.1",
@@ -481,119 +481,244 @@ with tabs[4]:
             "Poland": "Unnamed: 12",
         }
 
+        # ---------- Mapping des feuilles Forecast ----------
+        # (index Excel 1-based demandé : France=2, UK=3, Netherlands=4, Germany=5, Poland=6, Belgium=7)
+        forecast_sheet_by_country = {
+            "France": 1,       # pandas: 0-based -> feuille 2 Excel = index 1
+            "UK": 2,           # 3 -> 2
+            "Netherlands": 3,  # 4 -> 3
+            "Germany": 4,      # 5 -> 4
+            "Poland": 5,       # 6 -> 5
+            "Belgium": 6,      # 7 -> 6
+        }
+
+        # ---------- Charge l'historique ----------
         @st.cache_data(show_spinner=False)
-        def load_temp_hdd(xlsx_path: Path, file_version: float):
+        def load_hist(xlsx_path: Path, file_version: float) -> pd.DataFrame:
             df = pd.read_excel(xlsx_path, sheet_name="Historical temp & HDD", skiprows=5)
-            # drop de la 1re ligne ("PX_LAST")
-            df = df.drop(index=0).reset_index(drop=True)
+            df = df.drop(index=0).reset_index(drop=True)  # supprime la ligne "PX_LAST"
             df = df.rename(columns={"Unnamed: 0": "Date"})
             df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+            # typage num
+            for c in list(temp_cols.values()) + list(hdd_cols.values()):
+                if c in df.columns:
+                    df[c] = pd.to_numeric(df[c], errors="coerce")
+            df = df.dropna(subset=["Date"]).sort_values("Date").reset_index(drop=True)
+            return df
+
+        # ---------- Charge un forecast (feuille 2–7) ----------
+        @st.cache_data(show_spinner=False)
+        def load_forecast_sheet(xlsx_path: Path, sheet_index_zero_based: int, file_version: float) -> pd.DataFrame:
+            # Données: Col A = dates, Col B = température ; data à partir de la ligne 2
+            # -> On lit sans header, on nomme nous-mêmes
+            df = pd.read_excel(
+                xlsx_path,
+                sheet_name=sheet_index_zero_based,
+                header=None,
+                skiprows=1,     # saute la 1re ligne (ligne 2 Excel devient ligne 1 du DataFrame)
+                usecols=[0, 1]
+            )
+            df.columns = ["Date", "TempF"]
+            df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+            df["TempF"] = pd.to_numeric(df["TempF"], errors="coerce")
+            df = df.dropna(subset=["Date", "TempF"]).sort_values("Date").reset_index(drop=True)
             return df
 
         file_mtime = os.path.getmtime(hdd_file)
-        df_th = load_temp_hdd(hdd_file, file_mtime)
+        df_hist = load_hist(hdd_file, file_mtime)
 
-        # Vérif colonnes pour éviter KeyError silencieux
-        missing_t = [c for c in temp_cols.values() if c not in df_th.columns]
-        missing_h = [c for c in hdd_cols.values() if c not in df_th.columns]
-        if missing_t or missing_h:
-            st.error(f"Colonnes manquantes dans la feuille 'Historical temp & HDD': "
-                     f"TEMP {missing_t} | HDD {missing_h}")
-            st.write("Colonnes disponibles :", list(df_th.columns))
-            st.stop()
+        st.caption(f"Dernière date historique lue : **{df_hist['Date'].max().date()}**  (mtime: {int(file_mtime)})")
 
-        # conversions numériques
-        for c in list(temp_cols.values()) + list(hdd_cols.values()):
-            df_th[c] = pd.to_numeric(df_th[c], errors="coerce")
-        df_th = df_th.dropna(subset=["Date"]).sort_values("Date").reset_index(drop=True)
+        # ---------- UI ----------
+        c1, c2, c3 = st.columns([1.2, 1, 1.2])
+        with c1:
+            country = st.selectbox("Choisir un pays :", list(temp_cols.keys()), index=0, key="country_temp_hdd")
+        with c2:
+            data_mode = st.radio("Type de données", ["Historique", "Forecast"], horizontal=True)
+        with c3:
+            smooth7 = st.checkbox("Lissage 7j (plots saisonniers)", True)
 
-        st.caption(f"Dernière date lue : **{df_th['Date'].max().date()}**  (mtime: {int(file_mtime)})")
-
-        # ---------- Sélecteur pays ----------
-        country = st.selectbox("Choisir un pays :", list(temp_cols.keys()), index=0)
-
-        # ---------- Préparation: années & ticks mois ----------
-        df_tmp = df_th[["Date", temp_cols[country]]].rename(columns={temp_cols[country]: "Temp"}).dropna()
-        df_tmp["Year"] = df_tmp["Date"].dt.year
-        df_tmp["DOY"]  = df_tmp["Date"].dt.dayofyear
-
+        # ---------- Prépa commune ----------
         ticks = [pd.Timestamp(2021, m, 1).dayofyear for m in range(1, 13)]
         labels = [calendar.month_abbr[m] for m in range(1, 13)]
 
-        # ---------- FIG 1 : Seasonal Températures ----------
-        colors = {
-            2025: ("black", 3.0, 1.0),
-            2024: ("red",   2.6, 1.0),
-            2023: ("green", 2.4, 1.0),
-            2022: ("#88c",  1.5, 0.35),
-            2021: ("#cc9",  1.5, 0.35),
-            2020: ("#9cc",  1.5, 0.35),
-        }
+        # ---------- HISTORIQUE (comme avant) ----------
+        if data_mode == "Historique":
+            # Série température saisonnière
+            df_tmp = df_hist[["Date", temp_cols[country]]].rename(columns={temp_cols[country]: "Temp"}).dropna()
+            df_tmp["Year"] = df_tmp["Date"].dt.year
+            df_tmp["DOY"] = df_tmp["Date"].dt.dayofyear
 
-        fig_seasonal = go.Figure()
-        for yr in sorted(df_tmp["Year"].unique()):
-            ys = (
-                df_tmp[df_tmp["Year"] == yr]
-                .sort_values("DOY")
-                .set_index("DOY")["Temp"]
-                .rolling(7, min_periods=1).mean()
-                .reset_index()
+            # Couleurs
+            colors = {
+                2025: ("black", 3.0, 1.0),
+                2024: ("red",   2.6, 1.0),
+                2023: ("green", 2.4, 1.0),
+                2022: ("#88c",  1.5, 0.35),
+                2021: ("#cc9",  1.5, 0.35),
+                2020: ("#9cc",  1.5, 0.35),
+            }
+
+            fig_seasonal = go.Figure()
+            for yr in sorted(df_tmp["Year"].unique()):
+                ys = df_tmp[df_tmp["Year"] == yr].sort_values("DOY")
+                if smooth7:
+                    ys = ys.assign(Temp=ys["Temp"].rolling(7, min_periods=1).mean())
+                color, width, opacity = colors.get(yr, ("#bbb", 1.2, 0.3))
+                fig_seasonal.add_trace(go.Scatter(
+                    x=ys["DOY"], y=ys["Temp"], mode="lines",
+                    name=str(yr), line=dict(color=color, width=width), opacity=opacity
+                ))
+
+            fig_seasonal.update_layout(
+                title=f"{country} – Seasonal Temperatures (2020–2025)",
+                xaxis=dict(title="Month", tickmode="array", tickvals=ticks, ticktext=labels),
+                yaxis_title="Temperature (°C)",
+                legend=dict(orientation="h"),
+                margin=dict(l=40, r=40, t=50, b=40),
+                height=450
             )
-            color, width, opacity = colors.get(yr, ("#bbb", 1.2, 0.3))
-            fig_seasonal.add_trace(go.Scatter(
-                x=ys["DOY"], y=ys["Temp"], mode="lines",
-                name=str(yr), line=dict(color=color, width=width), opacity=opacity
+            st.plotly_chart(fig_seasonal, use_container_width=True)
+
+            # HDD 2025 vs moyenne 2020–2024
+            d = df_hist[["Date", hdd_cols[country]]].rename(columns={hdd_cols[country]: "HDD"}).dropna()
+            d["Year"] = d["Date"].dt.year
+            d["Month"] = d["Date"].dt.month
+            monthly = d.groupby(["Year", "Month"])["HDD"].sum().unstack(0)
+
+            for yr in range(2020, 2026):
+                if yr not in monthly.columns:
+                    monthly[yr] = 0.0
+            monthly = monthly.sort_index(axis=1)
+
+            avg_2020_2024 = monthly.loc[:, 2020:2024].mean(axis=1)
+            hdd_2025      = monthly[2025]
+
+            x = list(range(1, 13))
+            month_lbls = [calendar.month_abbr[m] for m in x]
+            fig_hdd = go.Figure()
+            width = 0.35
+            fig_hdd.add_trace(go.Bar(
+                x=[xi - width/2 for xi in x], y=avg_2020_2024.values,
+                name=f"{country} Avg 2020–2024", marker_color="black", width=width
             ))
+            fig_hdd.add_trace(go.Bar(
+                x=[xi + width/2 for xi in x], y=hdd_2025.values,
+                name=f"{country} 2025", marker_color="red", width=width
+            ))
+            fig_hdd.update_layout(
+                title=f"{country} – Monthly HDD: 2025 vs Avg",
+                xaxis=dict(title="Month", tickmode="array", tickvals=x, ticktext=month_lbls),
+                yaxis_title="Number of HDD Days",
+                barmode="group",
+                legend=dict(orientation="h"),
+                margin=dict(l=40, r=40, t=50, b=40),
+                height=420
+            )
+            st.plotly_chart(fig_hdd, use_container_width=True)
 
-        fig_seasonal.update_layout(
-            title=f"{country} – Seasonal Temperatures (2020–2025)",
-            xaxis=dict(title="Month", tickmode="array", tickvals=ticks, ticktext=labels),
-            yaxis_title="Temperature (°C)",
-            legend=dict(orientation="h"),
-            margin=dict(l=40, r=40, t=50, b=40),
-            height=450
-        )
-        st.plotly_chart(fig_seasonal, use_container_width=True)
+        # ---------- FORECAST (feuilles 2–7) ----------
+        else:
+            # 1) Lis la feuille forecast du pays
+            sheet_idx = forecast_sheet_by_country[country]
+            df_fc = load_forecast_sheet(hdd_file, sheet_idx, file_mtime)
+            if df_fc.empty:
+                st.warning("Aucune donnée de forecast disponible.")
+                st.stop()
 
-        # ---------- FIG 2 : HDD Mensuels 2025 vs Moyenne 2020–2024 ----------
-        d = df_th[["Date", hdd_cols[country]]].rename(columns={hdd_cols[country]: "HDD"}).dropna()
-        d["Year"] = d["Date"].dt.year
-        d["Month"] = d["Date"].dt.month
-        monthly = d.groupby(["Year", "Month"])["HDD"].sum().unstack(0)
+            # 2) Calcule DOY & fenêtre de forecast
+            df_fc["DOY"] = df_fc["Date"].dt.dayofyear
+            start_fc, end_fc = df_fc["Date"].min(), df_fc["Date"].max()
+            st.caption(f"Fenêtre forecast : **{start_fc.date()} → {end_fc.date()}**  ({len(df_fc)} points)")
 
-        for yr in range(2020, 2026):
-            if yr not in monthly.columns:
-                monthly[yr] = 0.0
-        monthly = monthly.sort_index(axis=1)
+            # 3) Historique du pays correspondant (températures réelles)
+            df_h = (
+                df_hist[["Date", temp_cols[country]]]
+                .rename(columns={temp_cols[country]: "TempH"})
+                .dropna()
+                .sort_values("Date")
+                .reset_index(drop=True)
+            )
+            df_h["Year"] = df_h["Date"].dt.year
+            df_h["DOY"]  = df_h["Date"].dt.dayofyear
 
-        avg_2020_2024 = monthly.loc[:, 2020:2024].mean(axis=1)
-        hdd_2025      = monthly[2025]
+            # 4) Construit pour chaque DOY la moyenne/min/max sur 2020–2024
+            hist_ref = (
+                df_h[(df_h["Year"] >= 2020) & (df_h["Year"] <= 2024)]
+                .groupby("DOY")["TempH"]
+                .agg(["mean", "min", "max"])
+                .reindex(range(1, 367))  # inclut potentiellement 366
+                .interpolate(limit_direction="both")
+                .rename(columns={"mean": "HistMean", "min": "HistMin", "max": "HistMax"})
+                .reset_index()
+                .rename(columns={"DOY": "DOY"})
+            )
 
-        x = list(range(1, 13))
-        month_lbls = [calendar.month_abbr[m] for m in x]
-        fig_hdd = go.Figure()
-        width = 0.35
-        fig_hdd.add_trace(go.Bar(
-            x=[xi - width/2 for xi in x], y=avg_2020_2024.values,
-            name=f"{country} Avg 2020–2024", marker_color="black", width=width
-        ))
-        fig_hdd.add_trace(go.Bar(
-            x=[xi + width/2 for xi in x], y=hdd_2025.values,
-            name=f"{country} 2025", marker_color="red", width=width
-        ))
-        fig_hdd.update_layout(
-            title=f"{country} – Monthly HDD: 2025 vs Avg",
-            xaxis=dict(title="Month", tickmode="array", tickvals=x, ticktext=month_lbls),
-            yaxis_title="Number of HDD Days",
-            barmode="group",
-            legend=dict(orientation="h"),
-            margin=dict(l=40, r=40, t=50, b=40),
-            height=420
-        )
-        st.plotly_chart(fig_hdd, use_container_width=True)
+            # 5) Joins forecast ~> stats historiques (par DOY)
+            df_cmp = df_fc.merge(hist_ref, on="DOY", how="left")
+
+            # 6) Plot principal : bande min-max + moyenne histo + forecast
+            #    Axe X = Date réelle (plus parlant que DOY quand on regarde un horizon)
+            fig_cmp = go.Figure()
+            # Bande min-max
+            fig_cmp.add_trace(go.Scatter(
+                x=df_cmp["Date"], y=df_cmp["HistMin"], mode="lines",
+                line=dict(color="lightgray"), name="Hist Min (20–24)", showlegend=False
+            ))
+            fig_cmp.add_trace(go.Scatter(
+                x=df_cmp["Date"], y=df_cmp["HistMax"], mode="lines", fill="tonexty",
+                line=dict(color="lightgray"), name="Hist Max (20–24)",
+                fillcolor="rgba(128,128,128,0.25)"
+            ))
+            # Moyenne historique
+            fig_cmp.add_trace(go.Scatter(
+                x=df_cmp["Date"], y=df_cmp["HistMean"], mode="lines",
+                line=dict(color="black", dash="dash"), name="Moyenne 2020–2024"
+            ))
+            # Forecast
+            fig_cmp.add_trace(go.Scatter(
+                x=df_cmp["Date"], y=df_cmp["TempF"], mode="lines+markers",
+                name="Forecast", line=dict(color="red", width=2.5)
+            ))
+            fig_cmp.update_layout(
+                title=f"{country} – Forecast vs Historique (même période)",
+                xaxis_title="Date", yaxis_title="Température (°C)",
+                legend=dict(orientation="h"),
+                margin=dict(l=40, r=40, t=50, b=40),
+                height=480
+            )
+            st.plotly_chart(fig_cmp, use_container_width=True)
+
+            # 7) Anomalies: moyenne du forecast – moyenne historique sur la fenêtre
+            mean_fc   = float(df_cmp["TempF"].mean())
+            mean_hist = float(df_cmp["HistMean"].mean())
+            anom      = mean_fc - mean_hist
+
+            # 8) Petit tableau récap
+            df_summary = pd.DataFrame({
+                "Pays": [country],
+                "Début forecast": [start_fc.date()],
+                "Fin forecast":   [end_fc.date()],
+                "Moy. forecast (°C)": [round(mean_fc, 2)],
+                "Moy. hist. 20–24 (°C)": [round(mean_hist, 2)],
+                "Anomalie (°C)": [round(anom, 2)],
+            })
+            st.dataframe(df_summary, use_container_width=True)
+
+            # 9) Optionnel : scatter anomalies journalières (forecast – moyenne histo)
+            df_cmp["Anomaly"] = df_cmp["TempF"] - df_cmp["HistMean"]
+            fig_anom = go.Figure()
+            fig_anom.add_trace(go.Bar(x=df_cmp["Date"], y=df_cmp["Anomaly"], name="Anomaly (°C)"))
+            fig_anom.add_hline(y=0, line_dash="dash", line_color="black")
+            fig_anom.update_layout(
+                title=f"{country} – Anomalie journalière (Forecast – Moyenne histo 20–24)",
+                xaxis_title="Date", yaxis_title="°C",
+                margin=dict(l=40, r=40, t=50, b=40), height=320
+            )
+            st.plotly_chart(fig_anom, use_container_width=True)
 
     except Exception as e:
-        st.error("Une erreur a empêché l’affichage de l’onglet.")
+        st.error("Une erreur a empêché l’affichage de l’onglet Temp/HDD.")
         st.exception(e)
 
 # === 6. Onglet AUCTIONS ===
