@@ -504,8 +504,17 @@ with tabs[4]:
 
         # Charge un forecast via nom de feuille si possible, sinon via index
         @st.cache_data(show_spinner=False)
-        def load_forecast_sheet_smart(xlsx_path: Path, country: str, file_version: float) -> pd.DataFrame:
+        def load_forecast_sheet_smart(xlsx_path: Path, country: str, file_version: float):
+            """
+            Retourne (df_fc, sheet_used, start_row), où:
+            - df_fc: DataFrame avec colonnes ['Date','TempF'] nettoyées
+            - sheet_used: nom OU index réellement utilisé pour la lecture
+            - start_row: numéro de ligne Excel (1-based) détecté pour le début des données
+            """
+            import pandas as pd
             xls = pd.ExcelFile(xlsx_path)
+
+            # 1) Choix de feuille: d'abord par NOM insensible à la casse, sinon fallback INDEX (0-based)
             target_name = forecast_sheet_by_country_name.get(country)
             by_name = None
             if target_name:
@@ -513,21 +522,68 @@ with tabs[4]:
                     if s.strip().lower() == target_name.strip().lower():
                         by_name = s
                         break
-            sheet_to_use = by_name if by_name is not None else forecast_sheet_by_country_index[country]
+            sheet_used = by_name if by_name is not None else forecast_sheet_by_country_index[country]
 
-            # Données: Col A = dates, Col B = température ; data à partir de la ligne 2
+            # 2) Lecture brute des 2 premières colonnes pour sniffer la 1ère ligne data
+            probe = pd.read_excel(xlsx_path, sheet_name=sheet_used, header=None, usecols=[0, 1])
+            colA = probe.iloc[:, 0]
+
+            def _is_date_like(x):
+                # True si x ressemble à une date (string, Excel serial, pd.Timestamp)
+                try:
+                    # Excel serial number (plutôt >20000 ~ 1954+)
+                    if isinstance(x, (int, float)) and 20000 <= float(x) <= 80000:
+                        return True
+                    # Essais parse (tolère formats jour/mois)
+                    d = pd.to_datetime(x, errors="coerce", dayfirst=True)
+                    return pd.notna(d)
+                except Exception:
+                    return False
+
+            # Cherche la 1ère ligne contenant une "date" en col A
+            start_idx0 = None
+            for i, v in enumerate(colA[:50]):  # inspecte les 50 premières lignes
+                if _is_date_like(v):
+                    start_idx0 = i
+                    break
+
+            # Si rien trouvé, on suppose données dès ligne 2 Excel (skiprows=1)
+            if start_idx0 is None:
+                start_idx0 = 1
+
+            # 3) Lecture finale en partant de start_idx0 (0-based), sans header
             df = pd.read_excel(
                 xlsx_path,
-                sheet_name=sheet_to_use,
+                sheet_name=sheet_used,
                 header=None,
-                skiprows=1,       # saute la ligne 1 Excel ; les données démarrent ligne 2
+                skiprows=start_idx0,
                 usecols=[0, 1]
             )
             df.columns = ["Date", "TempF"]
-            df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+
+            # Normalisation Dates (gère string, excel serial, etc.)
+            def _to_datetime_any(s):
+                s1 = pd.to_datetime(s, errors="coerce", dayfirst=True)
+                # Tentative Excel serial s’il reste des NaN
+                if s1.isna().any():
+                    ser = pd.to_numeric(s, errors="coerce")
+                    mask = ser.notna()
+                    if mask.any():
+                        s2 = pd.to_datetime(ser[mask], unit="D", origin="1899-12-30", errors="coerce")
+                        s1.loc[mask] = s2
+                return s1
+
+            df["Date"] = _to_datetime_any(df["Date"])
             df["TempF"] = pd.to_numeric(df["TempF"], errors="coerce")
+
+            # Nettoyage
             df = df.dropna(subset=["Date", "TempF"]).sort_values("Date").reset_index(drop=True)
-            return df
+
+            # start_row: ligne Excel 1-based (rajoute 1 pour passer de index 0 → 1, et +1 pour header "saute")
+            start_row_excel = start_idx0 + 1
+
+            return df, sheet_used, start_row_excel
+
 
         # ---------- Charge l'historique ----------
         @st.cache_data(show_spinner=False)
@@ -561,7 +617,8 @@ with tabs[4]:
         # Panneau diagnostic utile pour vérifier les feuilles et un aperçu
         with st.expander("🔎 Diagnostic (forecast)"):
             try:
-                st.write("Feuilles détectées :", list_sheet_names(hdd_file))
+                sheet_names = list_sheet_names(hdd_file)
+                st.write("Feuilles détectées :", sheet_names)
             except Exception as _e:
                 st.warning(f"Impossible de lister les feuilles : {_e}")
 
@@ -647,7 +704,21 @@ with tabs[4]:
         # ---------- FORECAST ----------
         else:
             # 1) Lis la feuille forecast du pays (nom si dispo, sinon fallback index)
-            df_fc = load_forecast_sheet_smart(hdd_file, country, file_mtime)
+            df_fc, sheet_used, start_row_excel = load_forecast_sheet_smart(hdd_file, country, file_mtime)
+
+            if df_fc.empty:
+                st.error("Forecast vide après lecture. Vérifie le fichier : colonnes A=Date, B=Temp, et qu'il y a des valeurs.")
+                st.stop()
+
+            # Diagnostic complet
+            st.info(
+                f"Lecture forecast → Feuille **{sheet_used}** | "
+                f"Début détecté à la **ligne Excel {start_row_excel}** | "
+                f"N={len(df_fc)} points | "
+                f"Période: {df_fc['Date'].min().date()} → {df_fc['Date'].max().date()}"
+            )
+            st.dataframe(df_fc.head(8), use_container_width=True)
+
 
             if df_fc.empty:
                 st.warning("Aucune donnée de forecast disponible (vérifie le nom/ordre des feuilles et skiprows).")
