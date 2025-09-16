@@ -1043,10 +1043,13 @@ with tabs[6]:
 
 # === 7. Onglet TECHNICALS (EUA) ===
 with tabs[7]:
-    st.header("Technicals (EUA) – basé sur la feuille 'Prices' (dates col A, EUA col B, dès la ligne 7)")
+    st.header("Technicals (EUA)")
+
+    from plotly.subplots import make_subplots
 
     @st.cache_data(show_spinner=False)
     def load_eua_prices(xlsx_path: Path, file_version: float) -> pd.DataFrame:
+        # Feuille "Prices" : Date en A, EUA en B ; données dès la ligne 7
         df = pd.read_excel(xlsx_path, sheet_name="Prices", skiprows=6, usecols="A:B", header=None)
         df.columns = ["Date", "EUA"]
         df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
@@ -1059,7 +1062,8 @@ with tabs[7]:
     px = load_eua_prices(file_path, file_mtime).copy()
 
     # --- Indicateurs ---
-    def ema(s, span): return s.ewm(span=span, adjust=False).mean()
+    def ema(s, span): 
+        return s.ewm(span=span, adjust=False).mean()
 
     def rsi_wilder(close, period=14):
         d = close.diff()
@@ -1098,8 +1102,46 @@ with tabs[7]:
     with c4:
         show_bb  = st.checkbox("Bandes de Bollinger (20,2σ)", True)
 
+    # ✅ Bloc pédagogie / explications
+    with st.expander("ℹ️ Explications des indicateurs"):
+        st.markdown("""
+**Moyennes mobiles (SMA/EMA)**  
+- **SMA** (*Simple Moving Average*) : moyenne arithmétique sur *n* jours.  
+  - **SMA20** ≈ tendance courte, **SMA50** = intermédiaire, **SMA200** = long terme.  
+  - **Lecture** : prix au-dessus d’une MM → biais haussier sur cet horizon (et inversement).  
+  - **Signal croisement** : un **golden cross** (SMA50 ↑ > SMA200) est plutôt haussier ; **death cross** l’inverse.
+- **EMA** : moyenne pondérée qui réagit plus vite (poids plus fort aux derniers jours).  
+  - **EMA21** est souvent utilisée pour lisser le court terme sans trop de retard.
+
+**Bandes de Bollinger (20, ±2σ)**  
+- Centre = **SMA20** ; bandes = **SMA20 ± 2×écart-type**.  
+- **Lecture** :  
+  - Rétrécissement = volatilité faible → risque de **breakout**.  
+  - Toucher la bande sup/inf *seul* n’est pas un signal : on regarde le **contexte** (tendance/volatilité).  
+  - Un **close** au-dessus de la bande sup après contraction peut signaler une impulsion.
+
+**MACD (12,26,9)**  
+- Différence entre **EMA12** et **EMA26** ; **Signal** = EMA9 du MACD ; **Histogramme** = MACD − Signal.  
+- **Lecture** :  
+  - **MACD > 0** → momentum haussier ; **< 0** → baissier.  
+  - **Croisement** MACD/Signal : haussier quand MACD ↑ passe au-dessus du Signal (et inversement).  
+  - L’**Histogramme** anticipe parfois le croisement (il rétrécit avant).
+
+**RSI(14)**  
+- Oscillateur 0–100 basé sur gains/pertes moyens.  
+- **Seuils** : **>70** suracheté / **<30** survendu (sur tendances fortes, rester >50 ou <50 compte plus).  
+- **Divergences** : prix fait un nouveau plus haut mais RSI non → essoufflement possible.
+
+**Interprétation rapide (non-exhaustive)**  
+- Tendance : **prix au-dessus** de **SMA50** et **SMA200**, **MACD > 0** → biais haussier.  
+- Reversals : **RSI** sort d’extrême + **croisement MACD** + **cassure BB** = scénario plus solide.  
+- Contexte > signal isolé : combine toujours 2–3 familles (tendance, momentum, volatilité).
+        """)
+
+    # Filtre période
     def _cut(df, mode):
-        if mode == "Tout": return df
+        if mode == "Tout": 
+            return df
         now = df["Date"].max()
         delta = {"3M": pd.DateOffset(months=3),
                  "6M": pd.DateOffset(months=6),
@@ -1151,11 +1193,10 @@ with tabs[7]:
     fig.add_hline(y=30, line_dash="dash", line_color="green", row=3, col=1)
     fig.update_yaxes(title_text="RSI", row=3, col=1, range=[0,100])
 
-    fig.update_layout(margin=dict(l=40, r=40, t=60, b=40), height=800, legend=dict(orientation="h"))
+    fig.update_layout(margin=dict(l=40, r=40, t=60, b=40), height=820, legend=dict(orientation="h"))
     st.plotly_chart(fig, use_container_width=True)
 
     # Export CSV (sur la fenêtre affichée)
     csv_ind = px.loc[px["Date"].isin(pxv["Date"])].to_csv(index=False).encode("utf-8")
     st.download_button("Télécharger les indicateurs (CSV)",
                        data=csv_ind, file_name="EUA_technicals.csv", mime="text/csv", use_container_width=True)
-
