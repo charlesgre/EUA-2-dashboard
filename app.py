@@ -448,7 +448,6 @@ with tabs[5]:
 # 2) 🌡️ Onglet TEMP & HDD — organisé par pays
 with tabs[4]:
     st.header("Températures saisonnières & HDD mensuels")
-    st.caption("🧪 Bloc robuste fichiers/feuilles + nettoyage forecast")
 
     # --- Résolution de chemin robuste (+ fallback /mnt/data + upload manuel)
     def _resolve_hdd_path() -> Path | None:
