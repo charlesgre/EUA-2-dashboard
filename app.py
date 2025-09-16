@@ -28,11 +28,6 @@ except Exception as e:
 st.set_page_config(page_title="Gas Dashboard", layout="wide")
 st.title("\U0001F4CA EUA Analytics Dashboard")
 
-st.caption("RUN MARKER: vTempHDD-001")
-from pathlib import Path; import os
-st.caption("Script path: " + str(Path(__file__).resolve()))
-st.caption("CWD: " + os.getcwd())
-st.caption("Tabs count (debug): " + str(len(st.tabs if 'tabs' in globals() else [])))
 
 # --- rendre la barre d'onglets scrollable ET autoriser le retour à la ligne ---
 st.markdown("""
@@ -71,7 +66,6 @@ tabs = st.tabs([
     "Auctions"         # tabs[6]  ⬅️ nouveau
 ])
 
-st.caption(f"Debug: {len(tabs)} onglets créés")
 
 # === 1. Onglet STOCKS ===
 with tabs[0]:
@@ -477,8 +471,6 @@ with tabs[4]:
         st.error("Fichier introuvable : ni APP_DIR/HDD EUA.xlsx ni /mnt/data/HDD EUA.xlsx.")
         st.stop()
 
-    st.caption(f"Chemin HDD détecté : **{hdd_file}**")
-
     # ---------- Mappings 'Historical temp & HDD' ----------
     temp_cols = {
         "France": "Last Price",
@@ -730,11 +722,6 @@ with tabs[4]:
             st.error("Forecast vide ou non exploitable après nettoyage (dates/valeurs).")
             st.stop()
 
-        st.info(
-            f"Forecast → Feuille **{sheet_used}** | Début **ligne Excel {start_row_excel}** | "
-            f"N={len(df_fc)} | Période **{df_fc['Date'].min().date()} → {df_fc['Date'].max().date()}**"
-        )
-        st.dataframe(df_fc.head(8), use_container_width=True)
 
         df_fc["DOY"] = df_fc["Date"].dt.dayofyear
         start_fc, end_fc = df_fc["Date"].min(), df_fc["Date"].max()
@@ -863,7 +850,6 @@ with tabs[6]:
         st.stop()
 
     df_auctions = load_auctions_dataframe(auctions_path, _file_version(auctions_path))
-    st.caption("Lignes affichées : **5–17** et **55–93** (entêtes = ligne 1).")
 
     # --- rendu dynamique (AgGrid si dispo, sinon Styler) ---
     if HAS_AGGRID:
