@@ -7,6 +7,7 @@ import plotly.graph_objects as go
 from pathlib import Path
 import os
 import io, hashlib
+from plotly.subplots import make_subplots
 
 # Optionnel : AG Grid pour filtres/tri type Excel
 HAS_AGGRID = False
@@ -57,13 +58,14 @@ file_path = APP_DIR / "Gas storages.xlsx"   # évite les surprises de CWD
 auctions_path = APP_DIR / "Auctions EUA.xlsx"
 
 tabs = st.tabs([
-    "Stocks",          # tabs[0]
-    "Prix (EUA/TTF)",  # tabs[1]
-    "Strats RSI",      # tabs[2]
-    "Open Interest",   # tabs[3]
-    "Temp/HDD",        # tabs[4]
-    "Forward Curve",   # tabs[5]
-    "Auctions"         # tabs[6]  ⬅️ nouveau
+    "Stocks",
+    "Prix (EUA/TTF)",
+    "Strats RSI",
+    "Open Interest",
+    "Temp/HDD",
+    "Forward Curve",
+    "Auctions",
+    "Technicals (EUA)"   # ⬅️ nouvel onglet (index 7)
 ])
 
 
@@ -267,6 +269,7 @@ with tabs[1]:
 
     seasonal_price_plotly(df_prices, 'EUA', "Price (€/tCO2)")
     seasonal_price_plotly(df_prices, 'TTF', "Price (€/MWh)", exclude=[2021, 2022])
+ 
 
 # === 3. STRATÉGIES RSI ===
 with tabs[2]:
@@ -1036,3 +1039,123 @@ with tabs[6]:
     if st.button("🔄 Rafraîchir les données (Auctions)"):
         load_auctions_dataframe.clear()
         st.rerun()
+
+
+# === 7. Onglet TECHNICALS (EUA) ===
+with tabs[7]:
+    st.header("Technicals (EUA) – basé sur la feuille 'Prices' (dates col A, EUA col B, dès la ligne 7)")
+
+    @st.cache_data(show_spinner=False)
+    def load_eua_prices(xlsx_path: Path, file_version: float) -> pd.DataFrame:
+        df = pd.read_excel(xlsx_path, sheet_name="Prices", skiprows=6, usecols="A:B", header=None)
+        df.columns = ["Date", "EUA"]
+        df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+        df["EUA"]  = pd.to_numeric(df["EUA"], errors="coerce")
+        df = df.dropna(subset=["Date", "EUA"]).sort_values("Date").reset_index(drop=True)
+        return df
+
+    # versionnage cache = mtime du fichier principal
+    file_mtime = os.path.getmtime(file_path)
+    px = load_eua_prices(file_path, file_mtime).copy()
+
+    # --- Indicateurs ---
+    def ema(s, span): return s.ewm(span=span, adjust=False).mean()
+
+    def rsi_wilder(close, period=14):
+        d = close.diff()
+        up = d.clip(lower=0)
+        down = -d.clip(upper=0)
+        roll_up = up.ewm(alpha=1/period, adjust=False).mean()
+        roll_down = down.ewm(alpha=1/period, adjust=False).mean()
+        rs = roll_up / roll_down
+        return 100 - (100 / (1 + rs))
+
+    px["SMA20"]  = px["EUA"].rolling(20).mean()
+    px["SMA50"]  = px["EUA"].rolling(50).mean()
+    px["SMA200"] = px["EUA"].rolling(200).mean()
+    px["EMA21"]  = ema(px["EUA"], 21)
+
+    bb_mid = px["SMA20"]
+    bb_std = px["EUA"].rolling(20).std()
+    px["BB_up"]  = bb_mid + 2*bb_std
+    px["BB_low"] = bb_mid - 2*bb_std
+
+    ema12, ema26 = ema(px["EUA"], 12), ema(px["EUA"], 26)
+    px["MACD"]   = ema12 - ema26
+    px["Signal"] = ema(px["MACD"], 9)
+    px["Hist"]   = px["MACD"] - px["Signal"]
+
+    px["RSI14"]  = rsi_wilder(px["EUA"], 14)
+
+    # --- UI ---
+    c1, c2, c3, c4 = st.columns([1.4,1,1,1.2])
+    with c1:
+        lookback = st.selectbox("Fenêtre d'affichage", ["3M","6M","1A","3A","Tout"], index=1)
+    with c2:
+        show_sma = st.multiselect("SMA", [20,50,200], default=[20,50])
+    with c3:
+        show_ema = st.multiselect("EMA", [21], default=[21])
+    with c4:
+        show_bb  = st.checkbox("Bandes de Bollinger (20,2σ)", True)
+
+    def _cut(df, mode):
+        if mode == "Tout": return df
+        now = df["Date"].max()
+        delta = {"3M": pd.DateOffset(months=3),
+                 "6M": pd.DateOffset(months=6),
+                 "1A": pd.DateOffset(years=1),
+                 "3A": pd.DateOffset(years=3)}.get(mode, pd.DateOffset(months=6))
+        return df[df["Date"] >= (now - delta)]
+
+    pxv = _cut(px, lookback)
+
+    # --- Figure combinée: Prix + MM/BB, MACD, RSI ---
+    fig = make_subplots(
+        rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.06,
+        row_heights=[0.55, 0.25, 0.20],
+        subplot_titles=("EUA + MM / Bandes", "MACD (12,26,9)", "RSI(14)")
+    )
+
+    # 1) Prix
+    fig.add_trace(go.Scatter(x=pxv["Date"], y=pxv["EUA"], name="EUA", mode="lines"), row=1, col=1)
+
+    # Bandes de Bollinger
+    if show_bb:
+        fig.add_trace(go.Scatter(x=pxv["Date"], y=pxv["BB_low"], name="BB low", mode="lines",
+                                 line=dict(width=0.5, color="lightgray"), showlegend=False), row=1, col=1)
+        fig.add_trace(go.Scatter(x=pxv["Date"], y=pxv["BB_up"], name="Bandes de Bollinger (20,2σ)", mode="lines",
+                                 fill="tonexty", line=dict(width=0.5, color="lightgray"),
+                                 fillcolor="rgba(180,180,180,0.25)"), row=1, col=1)
+
+    # SMA
+    for p in show_sma:
+        fig.add_trace(go.Scatter(x=pxv["Date"], y=pxv[f"SMA{p}"], name=f"SMA{p}", mode="lines"), row=1, col=1)
+
+    # EMA
+    for p in show_ema:
+        fig.add_trace(go.Scatter(x=pxv["Date"], y=pxv[f"EMA{p}"], name=f"EMA{p}",
+                                 mode="lines", line=dict(dash="dash")), row=1, col=1)
+
+    fig.update_yaxes(title_text="€/tCO₂", row=1, col=1)
+
+    # 2) MACD
+    fig.add_trace(go.Bar(x=pxv["Date"], y=pxv["Hist"], name="Histogramme"), row=2, col=1)
+    fig.add_trace(go.Scatter(x=pxv["Date"], y=pxv["MACD"], name="MACD", mode="lines"), row=2, col=1)
+    fig.add_trace(go.Scatter(x=pxv["Date"], y=pxv["Signal"], name="Signal", mode="lines", line=dict(dash="dot")),
+                  row=2, col=1)
+    fig.update_yaxes(title_text="MACD", row=2, col=1)
+
+    # 3) RSI
+    fig.add_trace(go.Scatter(x=pxv["Date"], y=pxv["RSI14"], name="RSI(14)", mode="lines"), row=3, col=1)
+    fig.add_hline(y=70, line_dash="dash", line_color="red", row=3, col=1)
+    fig.add_hline(y=30, line_dash="dash", line_color="green", row=3, col=1)
+    fig.update_yaxes(title_text="RSI", row=3, col=1, range=[0,100])
+
+    fig.update_layout(margin=dict(l=40, r=40, t=60, b=40), height=800, legend=dict(orientation="h"))
+    st.plotly_chart(fig, use_container_width=True)
+
+    # Export CSV (sur la fenêtre affichée)
+    csv_ind = px.loc[px["Date"].isin(pxv["Date"])].to_csv(index=False).encode("utf-8")
+    st.download_button("Télécharger les indicateurs (CSV)",
+                       data=csv_ind, file_name="EUA_technicals.csv", mime="text/csv", use_container_width=True)
+
