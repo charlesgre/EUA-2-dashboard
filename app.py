@@ -389,18 +389,20 @@ with tabs[3]:
             df_oi[col] = pd.to_numeric(df_oi[col], errors="coerce")
         df_oi = df_oi.dropna(subset=["Date"]).sort_values("Date")
 
-        # superposé
+        # --- Graphe superposé avec Dec 24 inclus ---
         fig_oi = go.Figure()
-        for col in df_oi.columns[1:]:
+        for col in df_oi.columns[1:]:  # df_oi inclut désormais Dec 24 en col G
             fig_oi.add_trace(go.Scatter(x=df_oi["Date"], y=df_oi[col], mode="lines", name=col))
+
         fig_oi.update_layout(
-            title="Historique des contrats (Open Interest) - Superposé",
-            xaxis_title="Date", yaxis_title="Open Interest",
+            title="Historique des contrats (Open Interest) - Superposé (incl. Dec 2024)",
+            xaxis_title="Date",
+            yaxis_title="Open Interest",
             legend=dict(orientation="h"),
-            margin=dict(l=40, r=40, t=50, b=40), height=600
+            margin=dict(l=40, r=40, t=50, b=40),
+            height=600
         )
         st.plotly_chart(fig_oi, use_container_width=True)
-
         # individuels
         st.subheader("Graphiques par contrat")
         for col in df_oi.columns[1:]:
