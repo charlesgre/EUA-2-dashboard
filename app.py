@@ -8,6 +8,7 @@ from pathlib import Path
 import os
 import io, hashlib
 from plotly.subplots import make_subplots
+import calendar
 
 # Optionnel : AG Grid pour filtres/tri type Excel
 HAS_AGGRID = False
@@ -411,6 +412,79 @@ with tabs[3]:
                 margin=dict(l=40, r=40, t=50, b=40), height=400
             )
             st.plotly_chart(fig_ind, use_container_width=True)
+
+
+# --- Comparatif OI des contrats Déc 2024/2025/2026 sur axe Jan→Déc ---
+st.subheader("Comparatif OI – Contrats Déc 2024 / 2025 / 2026 (axe mensuel)")
+
+try:
+    # Lecture de la feuille 4 (tu as ajouté Dec24/Dec25/Dec26)
+    df_dec = pd.read_excel(file_path_oi, sheet_name="Sheet4", skiprows=3)
+
+    # Normalisation des colonnes attendues
+    # (adapte si tes entêtes changent)
+    df_dec = df_dec.rename(columns={
+        df_dec.columns[0]: "Date",
+        df_dec.columns[1]: "Dec25",
+        df_dec.columns[2]: "Dec26",
+        df_dec.columns[3]: "Dec24",
+    })
+
+    # Typage
+    df_dec["Date"] = pd.to_datetime(df_dec["Date"], errors="coerce")
+    for col in ["Dec24", "Dec25", "Dec26"]:
+        df_dec[col] = pd.to_numeric(df_dec[col], errors="coerce")
+    df_dec = df_dec.dropna(subset=["Date"]).sort_values("Date")
+
+    # Helper: agrège par mois pour une ANNEE cible (on prend la dernière valeur dispo du mois)
+    def monthly_last_for_year(df, year, col):
+        d = df[df["Date"].dt.year == year][["Date", col]].dropna()
+        if d.empty:
+            return pd.Series(index=range(1, 13), dtype="float64")
+        d = d.assign(Month=d["Date"].dt.month).sort_values("Date")
+        g = d.groupby("Month")[col].last()
+        # Réindexe de 1 à 12 pour les mois manquants
+        return g.reindex(range(1, 13))
+
+    # Construit un tableau Mois x Contrat
+    oi_dec24 = monthly_last_for_year(df_dec, 2024, "Dec24")
+    oi_dec25 = monthly_last_for_year(df_dec, 2025, "Dec25")
+    oi_dec26 = monthly_last_for_year(df_dec, 2026, "Dec26")
+
+    # Figure
+    fig_dec = go.Figure()
+    months = list(range(1, 13))
+    month_labels = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+    # Ajoute une trace uniquement si on a au moins une valeur
+    traces = [
+        ("Dec 2024", oi_dec24),
+        ("Dec 2025", oi_dec25),
+        ("Dec 2026", oi_dec26),
+    ]
+    for name, s in traces:
+        if s.notna().any():
+            fig_dec.add_trace(go.Scatter(
+                x=months,
+                y=s.values.tolist(),
+                mode="lines+markers",
+                name=name
+            ))
+
+    fig_dec.update_layout(
+        title="Open Interest – Contrats Déc (axe Jan→Déc, valeur de fin de mois)",
+        xaxis=dict(title="Mois", tickmode="array", tickvals=months, ticktext=month_labels, range=[1, 12]),
+        yaxis_title="Open Interest",
+        legend=dict(orientation="h"),
+        margin=dict(l=40, r=40, t=50, b=40),
+        height=520
+    )
+
+    st.plotly_chart(fig_dec, use_container_width=True)
+
+except Exception as e:
+    st.warning(f"Impossible de construire le comparatif OI Déc: {e}")
+
 
 
 # === 5. Onglet FORWARD CURVE ===
