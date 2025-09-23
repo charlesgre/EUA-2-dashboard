@@ -416,73 +416,73 @@ with tabs[3]:
             st.plotly_chart(fig_ind, use_container_width=True)
 
 
-# --- Comparatif OI des contrats Déc 2024/2025/2026 sur axe Jan→Déc ---
+# --- Comparatif OI des contrats Déc 2024/2025/2026 (axe Jan→Déc, auto-année) ---
 st.subheader("Comparatif OI – Contrats Déc 2024 / 2025 / 2026 (axe mensuel)")
 
 try:
-    # Lecture de la feuille 4 (tu as ajouté Dec24/Dec25/Dec26)
+    # Lecture Sheet4 (B=Dec25, C=Dec26, D=Dec24)
     df_dec = pd.read_excel(file_path_oi, sheet_name="Sheet4", skiprows=3)
-
-    # Normalisation des colonnes attendues
-    # (adapte si tes entêtes changent)
     df_dec = df_dec.rename(columns={
-        df_dec.columns[0]: "Date",
-        df_dec.columns[1]: "Dec25",
-        df_dec.columns[2]: "Dec26",
-        df_dec.columns[3]: "Dec24",
+        df_dec.columns[0]: "Date",   # col A
+        df_dec.columns[1]: "Dec25",  # col B
+        df_dec.columns[2]: "Dec26",  # col C
+        df_dec.columns[3]: "Dec24",  # col D
     })
-
-    # Typage
     df_dec["Date"] = pd.to_datetime(df_dec["Date"], errors="coerce")
-    for col in ["Dec24", "Dec25", "Dec26"]:
-        df_dec[col] = pd.to_numeric(df_dec[col], errors="coerce")
+    for c in ["Dec24","Dec25","Dec26"]:
+        df_dec[c] = pd.to_numeric(df_dec[c], errors="coerce")
     df_dec = df_dec.dropna(subset=["Date"]).sort_values("Date")
 
-    # Helper: agrège par mois pour une ANNEE cible (on prend la dernière valeur dispo du mois)
-    def monthly_last_for_year(df, year, col):
-        d = df[df["Date"].dt.year == year][["Date", col]].dropna()
+    # Choisit automatiquement l'année la plus fournie pour chaque contrat
+    def monthly_last_auto(df, col):
+        d = df[["Date", col]].dropna()
         if d.empty:
-            return pd.Series(index=range(1, 13), dtype="float64")
-        d = d.assign(Month=d["Date"].dt.month).sort_values("Date")
-        g = d.groupby("Month")[col].last()
-        # Réindexe de 1 à 12 pour les mois manquants
-        return g.reindex(range(1, 13))
+            return pd.Series(index=range(1,13), dtype="float64"), None
+        d["Year"] = d["Date"].dt.year
+        # année avec le plus d'observations (en cas d'égalité → la plus récente)
+        counts = d.groupby("Year")[col].count()
+        year = counts[counts == counts.max()].index.max()
+        out = (
+            d[d["Year"] == year]
+            .assign(Month=lambda x: x["Date"].dt.month)
+            .sort_values("Date")
+            .groupby("Month")[col].last()
+            .reindex(range(1,13))
+        )
+        return out, int(year)
 
-    # Construit un tableau Mois x Contrat
-    oi_dec24 = monthly_last_for_year(df_dec, 2024, "Dec24")
-    oi_dec25 = monthly_last_for_year(df_dec, 2025, "Dec25")
-    oi_dec26 = monthly_last_for_year(df_dec, 2026, "Dec26")
+    oi_dec24, y24 = monthly_last_auto(df_dec, "Dec24")
+    oi_dec25, y25 = monthly_last_auto(df_dec, "Dec25")
+    oi_dec26, y26 = monthly_last_auto(df_dec, "Dec26")  # ← ne force plus 2026
 
-    # Figure
-    fig_dec = go.Figure()
     months = list(range(1, 13))
-    month_labels = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    month_labels = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
 
-    # Ajoute une trace uniquement si on a au moins une valeur
-    traces = [
-        ("Dec 2024", oi_dec24),
-        ("Dec 2025", oi_dec25),
-        ("Dec 2026", oi_dec26),
-    ]
-    for name, s in traces:
+    fig_dec = go.Figure()
+    for name, s in [("Dec 2024", oi_dec24), ("Dec 2025", oi_dec25), ("Dec 2026", oi_dec26)]:
         if s.notna().any():
             fig_dec.add_trace(go.Scatter(
-                x=months,
-                y=s.values.tolist(),
-                mode="lines+markers",
-                name=name
+                x=months, y=s.values.tolist(),
+                mode="lines+markers", name=name
             ))
 
     fig_dec.update_layout(
         title="Open Interest – Contrats Déc (axe Jan→Déc, valeur de fin de mois)",
-        xaxis=dict(title="Mois", tickmode="array", tickvals=months, ticktext=month_labels, range=[1, 12]),
+        xaxis=dict(title="Mois", tickmode="array", tickvals=months, ticktext=month_labels),
         yaxis_title="Open Interest",
         legend=dict(orientation="h"),
         margin=dict(l=40, r=40, t=50, b=40),
         height=520
     )
-
     st.plotly_chart(fig_dec, use_container_width=True)
+
+    # Affiche l'année utilisée pour chaque contrat (pratique pour vérifier)
+    used_years = []
+    if y24: used_years.append(f"Dec24 → {y24}")
+    if y25: used_years.append(f"Dec25 → {y25}")
+    if y26: used_years.append(f"Dec26 → {y26}")
+    if used_years:
+        st.caption("Années utilisées : " + " | ".join(used_years))
 
 except Exception as e:
     st.warning(f"Impossible de construire le comparatif OI Déc: {e}")
