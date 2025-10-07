@@ -1054,11 +1054,12 @@ with tabs[7]:
 
     @st.cache_data(show_spinner=False)
     def load_eua_prices(xlsx_path: Path, file_version: float) -> pd.DataFrame:
-        # Feuille "Prices" : Date en A, EUA en B ; données dès la ligne 7
-        df = pd.read_excel(xlsx_path, sheet_name="Prices", skiprows=6, usecols="A:B", header=None)
-        df.columns = ["Date", "EUA"]
+        # Feuille "Prices" : Date en A, EUA en B, Volume en C ; données dès la ligne 7
+        df = pd.read_excel(xlsx_path, sheet_name="Prices", skiprows=6, usecols="A:C", header=None)
+        df.columns = ["Date", "EUA", "VOL"]
         df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
         df["EUA"]  = pd.to_numeric(df["EUA"], errors="coerce")
+        df["VOL"]  = pd.to_numeric(df["VOL"], errors="coerce")
         df = df.dropna(subset=["Date", "EUA"]).sort_values("Date").reset_index(drop=True)
         return df
 
@@ -1066,7 +1067,7 @@ with tabs[7]:
     file_mtime = os.path.getmtime(file_path)
     px = load_eua_prices(file_path, file_mtime).copy()
 
-    # --- Indicateurs ---
+    # --- Indicateurs prix existants ---
     def ema(s, span): 
         return s.ewm(span=span, adjust=False).mean()
 
@@ -1096,6 +1097,28 @@ with tabs[7]:
 
     px["RSI14"]  = rsi_wilder(px["EUA"], 14)
 
+    # --- Nouveaux indicateurs liés au volume ---
+    # 1) Volume brut + moyenne mobile de volume
+    px["VOL_MA20"] = px["VOL"].rolling(20).mean()
+
+    # 2) OBV (On-Balance Volume)
+    _d = px["EUA"].diff()
+    _dir = _d.apply(lambda x: 1 if x>0 else (-1 if x<0 else 0))
+    px["OBV"] = (_dir * px["VOL"]).fillna(0).cumsum()
+
+    # 3) VWAP cumulatif (approx. daily close * volume)
+    #    - global: depuis le début
+    #    - annuel: ré-initialisé au 1er janvier de chaque année (ancrage annuel)
+    cum_pv = (px["EUA"] * px["VOL"]).cumsum()
+    cum_v  = px["VOL"].cumsum().replace(0, np.nan)
+    px["VWAP_all"] = (cum_pv / cum_v)
+
+    px["Year"] = px["Date"].dt.year
+    px["VWAP_year"] = (
+        px.groupby("Year").apply(lambda g: (g["EUA"]*g["VOL"]).cumsum() / g["VOL"].cumsum())
+          .reset_index(level=0, drop=True)
+    )
+
     # --- UI ---
     c1, c2, c3, c4 = st.columns([1.4,1,1,1.2])
     with c1:
@@ -1107,41 +1130,39 @@ with tabs[7]:
     with c4:
         show_bb  = st.checkbox("Bandes de Bollinger (20,2σ)", True)
 
+    # Contrôles volume
+    c5, c6, c7, c8 = st.columns([1,1,1,1])
+    with c5:
+        show_vol = st.checkbox("Afficher Volume", True)
+    with c6:
+        vol_ma_win = st.number_input("Période MAVOL", min_value=5, max_value=120, value=20, step=1)
+    with c7:
+        show_obv = st.checkbox("Afficher OBV", True)
+    with c8:
+        vwap_mode = st.selectbox("VWAP", ["Aucun","VWAP global","VWAP annuel"], index=1)
+
+    # Volume Profile (approx. par cours de clôture)
+    c9, c10 = st.columns([1,1])
+    with c9:
+        show_vbp = st.checkbox("Volume par prix (approx)", False)
+    with c10:
+        vbp_bins = st.slider("Nb de bins (VBP)", min_value=10, max_value=60, value=24, step=2)
+
     # ✅ Bloc pédagogie / explications
     with st.expander("ℹ️ Explications des indicateurs"):
-        st.markdown("""
-**Moyennes mobiles (SMA/EMA)**  
-- **SMA** (*Simple Moving Average*) : moyenne arithmétique sur *n* jours.  
-  - **SMA20** ≈ tendance courte, **SMA50** = intermédiaire, **SMA200** = long terme.  
-  - **Lecture** : prix au-dessus d’une MM → biais haussier sur cet horizon (et inversement).  
-  - **Signal croisement** : un **golden cross** (SMA50 ↑ > SMA200) est plutôt haussier ; **death cross** l’inverse.
-- **EMA** : moyenne pondérée qui réagit plus vite (poids plus fort aux derniers jours).  
-  - **EMA21** est souvent utilisée pour lisser le court terme sans trop de retard.
+        st.markdown(r"""
+**Nouveaux indicateurs basés sur le volume**  
+- **Volume & MAVOL(n)** : histogramme des échanges + moyenne mobile (détecter pics/sécheresses).  
+- **OBV** (*On-Balance Volume*) : cumule le volume selon la direction des clôtures → pression d'achat/vente.  
+- **VWAP cumulatif** : \(\text{VWAP} = \frac{\sum P\_t V\_t}{\sum V\_t}\). Version **globale** (depuis le début) et **annuelle** (ré-initialisée chaque année).  
+- **Volume par prix (approx.)** : somme des volumes par tranches de prix en utilisant le **cours de clôture** (proxy simplifiée du Volume Profile).  
 
-**Bandes de Bollinger (20, ±2σ)**  
-- Centre = **SMA20** ; bandes = **SMA20 ± 2×écart-type**.  
-- **Lecture** :  
-  - Rétrécissement = volatilité faible → risque de **breakout**.  
-  - Toucher la bande sup/inf *seul* n’est pas un signal : on regarde le **contexte** (tendance/volatilité).  
-  - Un **close** au-dessus de la bande sup après contraction peut signaler une impulsion.
-
-**MACD (12,26,9)**  
-- Différence entre **EMA12** et **EMA26** ; **Signal** = EMA9 du MACD ; **Histogramme** = MACD − Signal.  
-- **Lecture** :  
-  - **MACD > 0** → momentum haussier ; **< 0** → baissier.  
-  - **Croisement** MACD/Signal : haussier quand MACD ↑ passe au-dessus du Signal (et inversement).  
-  - L’**Histogramme** anticipe parfois le croisement (il rétrécit avant).
-
-**RSI(14)**  
-- Oscillateur 0–100 basé sur gains/pertes moyens.  
-- **Seuils** : **>70** suracheté / **<30** survendu (sur tendances fortes, rester >50 ou <50 compte plus).  
-- **Divergences** : prix fait un nouveau plus haut mais RSI non → essoufflement possible.
-
-**Interprétation rapide (non-exhaustive)**  
-- Tendance : **prix au-dessus** de **SMA50** et **SMA200**, **MACD > 0** → biais haussier.  
-- Reversals : **RSI** sort d’extrême + **croisement MACD** + **cassure BB** = scénario plus solide.  
-- Contexte > signal isolé : combine toujours 2–3 familles (tendance, momentum, volatilité).
+**Limitations (données H/L manquantes)**  
+- **CMF/Chaikin**, **A/D Line**, **MFI**, **Klinger** requièrent *High/Low* → non calculés fidèlement ici. Si tu ajoutes H/L, je les active.
         """)
+
+    # Met à jour MAVOL dynamiquement
+    px["VOL_MA20"] = px["VOL"].rolling(int(vol_ma_win)).mean()
 
     # Filtre période
     def _cut(df, mode):
@@ -1156,11 +1177,12 @@ with tabs[7]:
 
     pxv = _cut(px, lookback)
 
-    # --- Figure combinée: Prix + MM/BB, MACD, RSI ---
+    # --- Figure combinée: Prix + MM/BB/VWAP, Volume(+OBV), MACD, RSI ---
     fig = make_subplots(
-        rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.06,
-        row_heights=[0.55, 0.25, 0.20],
-        subplot_titles=("EUA + MM / Bandes", "MACD (12,26,9)", "RSI(14)")
+        rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.06,
+        row_heights=[0.48, 0.22, 0.18, 0.12],
+        subplot_titles=("EUA + MM / Bandes / VWAP", "Volume / MAVOL / OBV", "MACD (12,26,9)", "RSI(14)"),
+        specs=[[{}],[{"secondary_y": True}],[{}],[{}]]
     )
 
     # 1) Prix
@@ -1183,23 +1205,57 @@ with tabs[7]:
         fig.add_trace(go.Scatter(x=pxv["Date"], y=pxv[f"EMA{p}"], name=f"EMA{p}",
                                  mode="lines", line=dict(dash="dash")), row=1, col=1)
 
+    # VWAP
+    if vwap_mode == "VWAP global":
+        fig.add_trace(go.Scatter(x=pxv["Date"], y=pxv["VWAP_all"], name="VWAP (global)", mode="lines", line=dict(dash="dot")), row=1, col=1)
+    elif vwap_mode == "VWAP annuel":
+        fig.add_trace(go.Scatter(x=pxv["Date"], y=pxv["VWAP_year"], name="VWAP (annuel)", mode="lines", line=dict(dash="dot")), row=1, col=1)
+
     fig.update_yaxes(title_text="€/tCO₂", row=1, col=1)
 
-    # 2) MACD
-    fig.add_trace(go.Bar(x=pxv["Date"], y=pxv["Hist"], name="Histogramme"), row=2, col=1)
-    fig.add_trace(go.Scatter(x=pxv["Date"], y=pxv["MACD"], name="MACD", mode="lines"), row=2, col=1)
+    # 2) Volume / MAVOL / OBV
+    if show_vol:
+        fig.add_trace(go.Bar(x=pxv["Date"], y=pxv["VOL"], name="Volume"), row=2, col=1, secondary_y=False)
+        fig.add_trace(go.Scatter(x=pxv["Date"], y=pxv["VOL_MA20"], name=f"MAVOL({int(vol_ma_win)})", mode="lines", line=dict(dash="dot")), row=2, col=1, secondary_y=False)
+    if show_obv:
+        fig.add_trace(go.Scatter(x=pxv["Date"], y=pxv["OBV"], name="OBV", mode="lines"), row=2, col=1, secondary_y=True)
+
+    fig.update_yaxes(title_text="Volume", row=2, col=1, secondary_y=False)
+    fig.update_yaxes(title_text="OBV", row=2, col=1, secondary_y=True, showgrid=False)
+
+    # 3) MACD
+    fig.add_trace(go.Bar(x=pxv["Date"], y=pxv["Hist"], name="Histogramme"), row=3, col=1)
+    fig.add_trace(go.Scatter(x=pxv["Date"], y=pxv["MACD"], name="MACD", mode="lines"), row=3, col=1)
     fig.add_trace(go.Scatter(x=pxv["Date"], y=pxv["Signal"], name="Signal", mode="lines", line=dict(dash="dot")),
-                  row=2, col=1)
-    fig.update_yaxes(title_text="MACD", row=2, col=1)
+                  row=3, col=1)
+    fig.update_yaxes(title_text="MACD", row=3, col=1)
 
-    # 3) RSI
-    fig.add_trace(go.Scatter(x=pxv["Date"], y=pxv["RSI14"], name="RSI(14)", mode="lines"), row=3, col=1)
-    fig.add_hline(y=70, line_dash="dash", line_color="red", row=3, col=1)
-    fig.add_hline(y=30, line_dash="dash", line_color="green", row=3, col=1)
-    fig.update_yaxes(title_text="RSI", row=3, col=1, range=[0,100])
+    # 4) RSI
+    fig.add_trace(go.Scatter(x=pxv["Date"], y=pxv["RSI14"], name="RSI(14)", mode="lines"), row=4, col=1)
+    fig.add_hline(y=70, line_dash="dash", line_color="red", row=4, col=1)
+    fig.add_hline(y=30, line_dash="dash", line_color="green", row=4, col=1)
+    fig.update_yaxes(title_text="RSI", row=4, col=1, range=[0,100])
 
-    fig.update_layout(margin=dict(l=40, r=40, t=60, b=40), height=820, legend=dict(orientation="h"))
+    fig.update_layout(margin=dict(l=40, r=40, t=60, b=40), height=980, legend=dict(orientation="h"))
     st.plotly_chart(fig, use_container_width=True)
+
+    # --- Volume par prix (approx.) sur la fenêtre affichée ---
+    if show_vbp:
+        vdf = pxv.dropna(subset=["EUA", "VOL"]).copy()
+        if len(vdf) > 0:
+            prices = vdf["EUA"].values
+            vols   = vdf["VOL"].values
+            hist, edges = np.histogram(prices, bins=int(vbp_bins), weights=vols)
+            centers = (edges[:-1] + edges[1:]) / 2
+            vbp_fig = go.Figure()
+            vbp_fig.add_trace(go.Bar(x=hist, y=centers, orientation='h', name='Volume'))
+            vbp_fig.update_layout(height=420, margin=dict(l=80, r=40, t=40, b=40), showlegend=False,
+                                  title="Volume par tranches de prix (approx. par clôture)")
+            vbp_fig.update_yaxes(title_text="Prix (€/tCO₂)")
+            vbp_fig.update_xaxes(title_text="Volume agrégé")
+            st.plotly_chart(vbp_fig, use_container_width=True)
+        else:
+            st.info("Pas assez de données pour le Volume par prix sur la fenêtre sélectionnée.")
 
     # Export CSV (sur la fenêtre affichée)
     csv_ind = px.loc[px["Date"].isin(pxv["Date"])].to_csv(index=False).encode("utf-8")
