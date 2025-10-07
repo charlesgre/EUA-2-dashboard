@@ -1352,7 +1352,7 @@ with tabs[8]:
 
         # Séries principales (indices 0-based)
         eff_demand = _series_from_row(6)   # ligne 7
-        eff_supply = _series_from_row(21)  # ligne 22
+        eff_supply = _series_from_row(17)  # ligne 18
 
         av_demand  = _series_from_row(11)  # ligne 12
         av_supply  = _series_from_row(19)  # ligne 20
