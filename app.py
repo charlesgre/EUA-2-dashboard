@@ -237,10 +237,24 @@ with tabs[0]:
 # === 2. Onglet PRIX ===
 with tabs[1]:
     st.header("Prix du marché - EUA & TTF")
-    df_prices = pd.read_excel(file_path, sheet_name="Prices", skiprows=6)
+
+    # A=Date, B=EUA, D=TTF ; données à partir de la ligne 7 (skiprows=6)
+    df_prices = pd.read_excel(
+        file_path,
+        sheet_name="Prices",
+        skiprows=6,
+        usecols="A,B,D",
+        header=None
+    )
     df_prices.columns = ['Date', 'EUA', 'TTF']
+
+    # Parsing & nettoyage
     df_prices['Date'] = pd.to_datetime(df_prices['Date'], errors='coerce')
+    df_prices['EUA']  = pd.to_numeric(df_prices['EUA'], errors='coerce')
+    df_prices['TTF']  = pd.to_numeric(df_prices['TTF'], errors='coerce')
     df_prices = df_prices.dropna(subset=['Date'])
+
+    # Fenêtre d'années + DOY
     df_prices['Year'] = df_prices['Date'].dt.year
     df_prices = df_prices[df_prices['Year'].between(2021, 2025)]
     df_prices['DayOfYear'] = df_prices['Date'].dt.dayofyear
@@ -269,8 +283,10 @@ with tabs[1]:
         )
         st.plotly_chart(fig, use_container_width=True)
 
+    # Plots
     seasonal_price_plotly(df_prices, 'EUA', "Price (€/tCO2)")
     seasonal_price_plotly(df_prices, 'TTF', "Price (€/MWh)", exclude=[2021, 2022])
+
  
 
 # === 3. STRATÉGIES RSI ===
