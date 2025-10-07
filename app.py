@@ -1219,7 +1219,11 @@ with tabs[8]:
     def _latest_excel_in(dir_path: Path) -> Path | None:
         if not dir_path.exists():
             return None
-        files = sorted([p for p in dir_path.glob("*.xlsx") if p.is_file()], key=lambda p: p.stat().st_mtime, reverse=True)
+        files = sorted(
+            [p for p in dir_path.glob("*.xlsx") if p.is_file()],
+            key=lambda p: p.stat().st_mtime,
+            reverse=True
+        )
         return files[0] if files else None
 
     latest_xlsx = _latest_excel_in(BAL_DIR)
@@ -1255,7 +1259,7 @@ with tabs[8]:
 
         def _row_label(ridx: int) -> str:
             # essaie d'extraire un libellé lisible depuis col A/B/C...
-            for c in [0,1,2,3,4,5,6,7,8,9,10]:
+            for c in range(0, 11):  # colonnes A..K
                 try:
                     val = df.iat[ridx, c]
                     if isinstance(val, str) and val.strip():
@@ -1272,21 +1276,21 @@ with tabs[8]:
             return out.dropna()
 
         # Séries principales
-        eff_demand = _series_from_row(6)   # ligne 7
-        eff_supply = _series_from_row(21)  # ligne 22
+        eff_demand = _series_from_row(6)    # ligne 7
+        eff_supply = _series_from_row(21)   # ligne 22
 
-        av_demand = _series_from_row(11)   # ligne 12
-        av_supply = _series_from_row(19)   # ligne 20
+        av_demand = _series_from_row(11)    # ligne 12
+        av_supply = _series_from_row(19)    # ligne 20
 
-        sh_demand = _series_from_row(12)   # ligne 13
-        sh_supply = _series_from_row(20)   # ligne 21
+        sh_demand = _series_from_row(12)    # ligne 13
+        sh_supply = _series_from_row(20)    # ligne 21
 
         # Toutes demandes (7→13) et toutes offres (19→24)
-        demand_rows = list(range(6, 13))   # 6..12 (Excel 7..13)
-        supply_rows = list(range(18, 24))  # 18..23 (Excel 19..24)
+        demand_rows = list(range(6, 13))    # 6..12 (Excel 7..13)
+        supply_rows = list(range(18, 24))   # 18..23 (Excel 19..24)
 
-        all_demands = { _row_label(r): _series_from_row(r) for r in demand_rows }
-        all_supplies = { _row_label(r): _series_from_row(r) for r in supply_rows }
+        all_demands = {_row_label(r): _series_from_row(r) for r in demand_rows}
+        all_supplies = {_row_label(r): _series_from_row(r) for r in supply_rows}
 
         return {
             "years": years,
@@ -1312,69 +1316,74 @@ with tabs[8]:
     av_balance  = _balance(data["av_supply"],  data["av_demand"])
     sh_balance  = _balance(data["sh_supply"],  data["sh_demand"])
 
-    # -------- Graphs --------
+    # -------- Graphs balances --------
     c1, c2, c3 = st.columns(3)
     with c1:
         fig = go.Figure()
         fig.add_trace(go.Bar(x=eua_balance.index.astype(str), y=eua_balance.values, name="Balance EUA (Market)"))
         fig.add_hline(y=0, line_color="black", line_dash="dot")
-        fig.update_layout(title="Balance globale EUA (Supply − Demand)",
-                          xaxis_title="Année", yaxis_title="MtCO₂e", height=340,
-                          margin=dict(l=30,r=20,t=50,b=30), showlegend=False)
+        fig.update_layout(
+            title="Balance globale EUA (Supply − Demand)",
+            xaxis_title="Année", yaxis_title="MtCO₂e", height=340,
+            margin=dict(l=30, r=20, t=50, b=30), showlegend=False
+        )
         st.plotly_chart(fig, use_container_width=True)
     with c2:
         fig = go.Figure()
         fig.add_trace(go.Bar(x=av_balance.index.astype(str), y=av_balance.values, name="Aviation"))
         fig.add_hline(y=0, line_color="black", line_dash="dot")
-        fig.update_layout(title="Balance Aviation (Supply − Demand)",
-                          xaxis_title="Année", yaxis_title="MtCO₂e", height=340,
-                          margin=dict(l=30,r=20,t=50,b=30), showlegend=False)
+        fig.update_layout(
+            title="Balance Aviation (Supply − Demand)",
+            xaxis_title="Année", yaxis_title="MtCO₂e", height=340,
+            margin=dict(l=30, r=20, t=50, b=30), showlegend=False
+        )
         st.plotly_chart(fig, use_container_width=True)
     with c3:
         fig = go.Figure()
         fig.add_trace(go.Bar(x=sh_balance.index.astype(str), y=sh_balance.values, name="Shipping"))
         fig.add_hline(y=0, line_color="black", line_dash="dot")
-        fig.update_layout(title="Balance Shipping (Supply − Demand)",
-                          xaxis_title="Année", yaxis_title="MtCO₂e", height=340,
-                          margin=dict(l=30,r=20,t=50,b=30), showlegend=False)
+        fig.update_layout(
+            title="Balance Shipping (Supply − Demand)",
+            xaxis_title="Année", yaxis_title="MtCO₂e", height=340,
+            margin=dict(l=30, r=20, t=50, b=30), showlegend=False
+        )
         st.plotly_chart(fig, use_container_width=True)
 
     st.divider()
 
-# -------- Multi-lignes : Demandes SEULES --------
-st.subheader("Toutes les Demandes (lignes 7→13)")
-fig_demands = go.Figure()
-for name, s in data["all_demands"].items():
-    if s.dropna().empty:
-        continue
-    fig_demands.add_trace(go.Scatter(
-        x=s.index.astype(str), y=s.values, mode="lines+markers",
-        name=name  # ex: étiquette lue depuis la colonne A/B/...
-    ))
-fig_demands.update_layout(
-    title="Demandes EUA (à partir de la colonne L / ≥ 2021)",
-    xaxis_title="Année", yaxis_title="MtCO₂e",
-    legend=dict(orientation="h"),
-    height=520, margin=dict(l=40, r=40, t=60, b=40)
-)
-st.plotly_chart(fig_demands, use_container_width=True)
+    # -------- Multi-lignes : Demandes SEULES --------
+    st.subheader("Toutes les Demandes (lignes 7→13)")
+    fig_demands = go.Figure()
+    for name, s in data["all_demands"].items():
+        if s.dropna().empty:
+            continue
+        fig_demands.add_trace(go.Scatter(
+            x=s.index.astype(str), y=s.values, mode="lines+markers", name=name
+        ))
+    fig_demands.update_layout(
+        title="Demandes EUA (à partir de la colonne L / ≥ 2021)",
+        xaxis_title="Année", yaxis_title="MtCO₂e",
+        legend=dict(orientation="h"),
+        height=520, margin=dict(l=40, r=40, t=60, b=40)
+    )
+    st.plotly_chart(fig_demands, use_container_width=True)
 
-st.divider()
+    st.divider()
 
-# -------- Multi-lignes : Offres SEULES --------
-st.subheader("Toutes les Offres (lignes 19→24)")
-fig_supplies = go.Figure()
-for name, s in data["all_supplies"].items():
-    if s.dropna().empty:
-        continue
-    fig_supplies.add_trace(go.Scatter(
-        x=s.index.astype(str), y=s.values, mode="lines+markers",
-        name=name, line=dict(dash="dash")  # différenciation visuelle
-    ))
-fig_supplies.update_layout(
-    title="Offres EUA (à partir de la colonne L / ≥ 2021)",
-    xaxis_title="Année", yaxis_title="MtCO₂e",
-    legend=dict(orientation="h"),
-    height=520, margin=dict(l=40, r=40, t=60, b=40)
-)
-st.plotly_chart(fig_supplies, use_container_width=True)
+    # -------- Multi-lignes : Offres SEULES --------
+    st.subheader("Toutes les Offres (lignes 19→24)")
+    fig_supplies = go.Figure()
+    for name, s in data["all_supplies"].items():
+        if s.dropna().empty:
+            continue
+        fig_supplies.add_trace(go.Scatter(
+            x=s.index.astype(str), y=s.values, mode="lines+markers",
+            name=name, line=dict(dash="dash")
+        ))
+    fig_supplies.update_layout(
+        title="Offres EUA (à partir de la colonne L / ≥ 2021)",
+        xaxis_title="Année", yaxis_title="MtCO₂e",
+        legend=dict(orientation="h"),
+        height=520, margin=dict(l=40, r=40, t=60, b=40)
+    )
+    st.plotly_chart(fig_supplies, use_container_width=True)
