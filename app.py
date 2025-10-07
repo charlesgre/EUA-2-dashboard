@@ -1341,42 +1341,40 @@ with tabs[8]:
 
     st.divider()
 
-    # -------- Multi-lignes : toutes Demandes & toutes Offres --------
-    st.subheader("Toutes les Demandes (lignes 7→13) et toutes les Offres (lignes 19→24)")
-    fig_all = go.Figure()
+# -------- Multi-lignes : Demandes SEULES --------
+st.subheader("Toutes les Demandes (lignes 7→13)")
+fig_demands = go.Figure()
+for name, s in data["all_demands"].items():
+    if s.dropna().empty:
+        continue
+    fig_demands.add_trace(go.Scatter(
+        x=s.index.astype(str), y=s.values, mode="lines+markers",
+        name=name  # ex: étiquette lue depuis la colonne A/B/...
+    ))
+fig_demands.update_layout(
+    title="Demandes EUA (à partir de la colonne L / ≥ 2021)",
+    xaxis_title="Année", yaxis_title="MtCO₂e",
+    legend=dict(orientation="h"),
+    height=520, margin=dict(l=40, r=40, t=60, b=40)
+)
+st.plotly_chart(fig_demands, use_container_width=True)
 
-    # Demandes (traits pleins)
-    for name, s in data["all_demands"].items():
-        if s.dropna().empty: 
-            continue
-        fig_all.add_trace(go.Scatter(
-            x=s.index.astype(str), y=s.values, mode="lines+markers",
-            name=f"Demand | {name}"
-        ))
+st.divider()
 
-    # Offres (pointillés)
-    for name, s in data["all_supplies"].items():
-        if s.dropna().empty: 
-            continue
-        fig_all.add_trace(go.Scatter(
-            x=s.index.astype(str), y=s.values, mode="lines+markers",
-            name=f"Supply | {name}", line=dict(dash="dash")
-        ))
-
-    fig_all.update_layout(
-        title="EUA – Détails Demandes & Offres (à partir de la colonne L / année 2021)",
-        xaxis_title="Année", yaxis_title="MtCO₂e",
-        legend=dict(orientation="h"),
-        height=560, margin=dict(l=40,r=40,t=60,b=40)
-    )
-    st.plotly_chart(fig_all, use_container_width=True)
-
-    # -------- Petits tableaux de contrôle (facultatif) --------
-    with st.expander("🔎 Aperçu des séries lues (contrôle rapide)"):
-        colA, colB = st.columns(2)
-        with colA:
-            st.markdown("**Demandes (lignes 7→13)**")
-            st.dataframe(pd.DataFrame({k: v for k, v in data["all_demands"].items()}))
-        with colB:
-            st.markdown("**Offres (lignes 19→24)**")
-            st.dataframe(pd.DataFrame({k: v for k, v in data["all_supplies"].items()}))
+# -------- Multi-lignes : Offres SEULES --------
+st.subheader("Toutes les Offres (lignes 19→24)")
+fig_supplies = go.Figure()
+for name, s in data["all_supplies"].items():
+    if s.dropna().empty:
+        continue
+    fig_supplies.add_trace(go.Scatter(
+        x=s.index.astype(str), y=s.values, mode="lines+markers",
+        name=name, line=dict(dash="dash")  # différenciation visuelle
+    ))
+fig_supplies.update_layout(
+    title="Offres EUA (à partir de la colonne L / ≥ 2021)",
+    xaxis_title="Année", yaxis_title="MtCO₂e",
+    legend=dict(orientation="h"),
+    height=520, margin=dict(l=40, r=40, t=60, b=40)
+)
+st.plotly_chart(fig_supplies, use_container_width=True)
