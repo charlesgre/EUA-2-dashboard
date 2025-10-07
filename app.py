@@ -66,7 +66,8 @@ tabs = st.tabs([
     "Temp/HDD",
     "Forward Curve",
     "Auctions",
-    "Technicals (EUA)"   # ⬅️ nouvel onglet (index 7)
+    "Technicals (EUA)",
+    "EUA Balances"   # ⬅️ nouvel onglet (index 8)
 ])
 
 
@@ -1204,3 +1205,178 @@ with tabs[7]:
     csv_ind = px.loc[px["Date"].isin(pxv["Date"])].to_csv(index=False).encode("utf-8")
     st.download_button("Télécharger les indicateurs (CSV)",
                        data=csv_ind, file_name="EUA_technicals.csv", mime="text/csv", use_container_width=True)
+
+
+
+# === 8. Onglet EUA BALANCES ===
+with tabs[8]:
+    st.header("EUA Balances")
+
+    # -------- Utils fichiers --------
+    BAL_DIR = APP_DIR / "Balances"
+    st.caption("Source: dernier fichier Excel du dossier **Balances/**, dernière feuille, colonnes à partir de **L**.")
+
+    def _latest_excel_in(dir_path: Path) -> Path | None:
+        if not dir_path.exists():
+            return None
+        files = sorted([p for p in dir_path.glob("*.xlsx") if p.is_file()], key=lambda p: p.stat().st_mtime, reverse=True)
+        return files[0] if files else None
+
+    latest_xlsx = _latest_excel_in(BAL_DIR)
+    # Fallback : si pas de dossier Balances, on tente le fichier déposé en exemple
+    if latest_xlsx is None and (Path("/mnt/data") / "EUA balances 10.2025.xlsx").exists():
+        latest_xlsx = Path("/mnt/data") / "EUA balances 10.2025.xlsx"
+
+    if latest_xlsx is None or not latest_xlsx.exists():
+        st.error("Aucun fichier trouvé. Crée le dossier **Balances/** et place le fichier Excel dedans.")
+        st.stop()
+
+    st.success(f"Fichier utilisé : **{latest_xlsx.name}**")
+
+    # -------- Lecture + extraction --------
+    @st.cache_data(show_spinner=False)
+    def load_balances_last_sheet(xlsx_path: Path, file_version: str) -> dict:
+        # liste des feuilles et choix de la dernière
+        xls = pd.ExcelFile(xlsx_path)
+        sheet_name = xls.sheet_names[-1]
+
+        # lecture brute sans header (on travaille avec indices Excel)
+        df = pd.read_excel(xlsx_path, sheet_name=sheet_name, header=None, engine="openpyxl")
+
+        # colonnes à partir de L (index 11 en 0-based)
+        col_start = 11  # L
+        years_row_idx = 2  # ligne 3 Excel
+        years = df.iloc[years_row_idx, col_start:].copy()
+
+        # parse années → int ; filtre >= 2021
+        years = pd.to_numeric(years, errors="coerce")
+        year_mask = years >= 2021
+        years = years[year_mask].astype(int)
+
+        def _row_label(ridx: int) -> str:
+            # essaie d'extraire un libellé lisible depuis col A/B/C...
+            for c in [0,1,2,3,4,5,6,7,8,9,10]:
+                try:
+                    val = df.iat[ridx, c]
+                    if isinstance(val, str) and val.strip():
+                        return val.strip()
+                except Exception:
+                    pass
+            return f"Ligne {ridx+1}"
+
+        def _series_from_row(row_idx: int) -> pd.Series:
+            vals = df.iloc[row_idx, col_start:].copy()
+            vals = pd.to_numeric(vals, errors="coerce")
+            vals = vals[year_mask]
+            out = pd.Series(vals.values, index=years.values, name=_row_label(row_idx))
+            return out.dropna()
+
+        # Séries principales
+        eff_demand = _series_from_row(6)   # ligne 7
+        eff_supply = _series_from_row(21)  # ligne 22
+
+        av_demand = _series_from_row(11)   # ligne 12
+        av_supply = _series_from_row(19)   # ligne 20
+
+        sh_demand = _series_from_row(12)   # ligne 13
+        sh_supply = _series_from_row(20)   # ligne 21
+
+        # Toutes demandes (7→13) et toutes offres (19→24)
+        demand_rows = list(range(6, 13))   # 6..12 (Excel 7..13)
+        supply_rows = list(range(18, 24))  # 18..23 (Excel 19..24)
+
+        all_demands = { _row_label(r): _series_from_row(r) for r in demand_rows }
+        all_supplies = { _row_label(r): _series_from_row(r) for r in supply_rows }
+
+        return {
+            "years": years,
+            "eff_demand": eff_demand, "eff_supply": eff_supply,
+            "av_demand": av_demand,   "av_supply": av_supply,
+            "sh_demand": sh_demand,   "sh_supply": sh_supply,
+            "all_demands": all_demands, "all_supplies": all_supplies,
+            "sheet_name": sheet_name,
+        }
+
+    fv = f"{int(os.path.getmtime(latest_xlsx))}:{latest_xlsx.stat().st_size}"
+    data = load_balances_last_sheet(latest_xlsx, fv)
+
+    st.caption(f"Feuille lue : **{data['sheet_name']}**")
+
+    # -------- Balances (Supply - Demand) --------
+    def _balance(supply: pd.Series, demand: pd.Series) -> pd.Series:
+        # aligne les index années et calcule supply - demand
+        j = supply.to_frame("s").join(demand.to_frame("d"), how="outer")
+        return (j["s"] - j["d"]).dropna()
+
+    eua_balance = _balance(data["eff_supply"], data["eff_demand"])
+    av_balance  = _balance(data["av_supply"],  data["av_demand"])
+    sh_balance  = _balance(data["sh_supply"],  data["sh_demand"])
+
+    # -------- Graphs --------
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        fig = go.Figure()
+        fig.add_trace(go.Bar(x=eua_balance.index.astype(str), y=eua_balance.values, name="Balance EUA (Market)"))
+        fig.add_hline(y=0, line_color="black", line_dash="dot")
+        fig.update_layout(title="Balance globale EUA (Supply − Demand)",
+                          xaxis_title="Année", yaxis_title="MtCO₂e", height=340,
+                          margin=dict(l=30,r=20,t=50,b=30), showlegend=False)
+        st.plotly_chart(fig, use_container_width=True)
+    with c2:
+        fig = go.Figure()
+        fig.add_trace(go.Bar(x=av_balance.index.astype(str), y=av_balance.values, name="Aviation"))
+        fig.add_hline(y=0, line_color="black", line_dash="dot")
+        fig.update_layout(title="Balance Aviation (Supply − Demand)",
+                          xaxis_title="Année", yaxis_title="MtCO₂e", height=340,
+                          margin=dict(l=30,r=20,t=50,b=30), showlegend=False)
+        st.plotly_chart(fig, use_container_width=True)
+    with c3:
+        fig = go.Figure()
+        fig.add_trace(go.Bar(x=sh_balance.index.astype(str), y=sh_balance.values, name="Shipping"))
+        fig.add_hline(y=0, line_color="black", line_dash="dot")
+        fig.update_layout(title="Balance Shipping (Supply − Demand)",
+                          xaxis_title="Année", yaxis_title="MtCO₂e", height=340,
+                          margin=dict(l=30,r=20,t=50,b=30), showlegend=False)
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.divider()
+
+    # -------- Multi-lignes : toutes Demandes & toutes Offres --------
+    st.subheader("Toutes les Demandes (lignes 7→13) et toutes les Offres (lignes 19→24)")
+    fig_all = go.Figure()
+
+    # Demandes (traits pleins)
+    for name, s in data["all_demands"].items():
+        if s.dropna().empty: 
+            continue
+        fig_all.add_trace(go.Scatter(
+            x=s.index.astype(str), y=s.values, mode="lines+markers",
+            name=f"Demand | {name}"
+        ))
+
+    # Offres (pointillés)
+    for name, s in data["all_supplies"].items():
+        if s.dropna().empty: 
+            continue
+        fig_all.add_trace(go.Scatter(
+            x=s.index.astype(str), y=s.values, mode="lines+markers",
+            name=f"Supply | {name}", line=dict(dash="dash")
+        ))
+
+    fig_all.update_layout(
+        title="EUA – Détails Demandes & Offres (à partir de la colonne L / année 2021)",
+        xaxis_title="Année", yaxis_title="MtCO₂e",
+        legend=dict(orientation="h"),
+        height=560, margin=dict(l=40,r=40,t=60,b=40)
+    )
+    st.plotly_chart(fig_all, use_container_width=True)
+
+    # -------- Petits tableaux de contrôle (facultatif) --------
+    with st.expander("🔎 Aperçu des séries lues (contrôle rapide)"):
+        colA, colB = st.columns(2)
+        with colA:
+            st.markdown("**Demandes (lignes 7→13)**")
+            st.dataframe(pd.DataFrame({k: v for k, v in data["all_demands"].items()}))
+        with colB:
+            st.markdown("**Offres (lignes 19→24)**")
+            st.dataframe(pd.DataFrame({k: v for k, v in data["all_supplies"].items()}))
