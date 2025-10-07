@@ -1214,7 +1214,7 @@ with tabs[8]:
 
     # -------- Utils fichiers --------
     BAL_DIR = APP_DIR / "Balances"
-    st.caption("Source: dernier fichier Excel du dossier **Balances/**, dernière feuille, colonnes à partir de **L**.")
+    st.caption("Source: dernier fichier Excel du dossier **Balances/**, dernière feuille, colonnes **L→U** ; années depuis **ligne 3**, titres depuis **colonne C**.")
 
     def _latest_excel_in(dir_path: Path) -> Path | None:
         if not dir_path.exists():
@@ -1227,7 +1227,7 @@ with tabs[8]:
         return files[0] if files else None
 
     latest_xlsx = _latest_excel_in(BAL_DIR)
-    # Fallback : si pas de dossier Balances, on tente le fichier déposé en exemple
+    # Fallback : exemple uploadé
     if latest_xlsx is None and (Path("/mnt/data") / "EUA balances 10.2025.xlsx").exists():
         latest_xlsx = Path("/mnt/data") / "EUA balances 10.2025.xlsx"
 
@@ -1240,75 +1240,88 @@ with tabs[8]:
     # -------- Lecture + extraction --------
     @st.cache_data(show_spinner=False)
     def load_balances_last_sheet(xlsx_path: Path, file_version: str) -> dict:
-        # liste des feuilles et choix de la dernière
+        # Dernière feuille
         xls = pd.ExcelFile(xlsx_path)
         sheet_name = xls.sheet_names[-1]
 
-        # lecture brute sans header (on travaille avec indices Excel)
+        # Lecture brute
         df = pd.read_excel(xlsx_path, sheet_name=sheet_name, header=None, engine="openpyxl")
 
-        # colonnes à partir de L (index 11 en 0-based)
-        col_start = 11  # L
-        years_row_idx = 2  # ligne 3 Excel
-        years = df.iloc[years_row_idx, col_start:].copy()
+        # Fenêtre de colonnes et lignes demandées
+        COL_L, COL_U = 11, 21      # L..U en index 0-based (U exclusif)
+        ROW_START, ROW_END = 6, 34 # lignes 7..34 (fin exclusive)
 
-        # parse années → int ; filtre >= 2021
-        years = pd.to_numeric(years, errors="coerce")
-        year_mask = years >= 2021
-        years = years[year_mask].astype(int)
+        # Années = ligne 3, colonnes L..U
+        years_row = pd.to_numeric(df.iloc[2, COL_L:COL_U], errors="coerce")
+        valid_cols_mask = years_row.notna()
+        years = years_row[valid_cols_mask].astype(int).tolist()
 
+        # Fonction libellé = colonne C (index 2)
         def _row_label(ridx: int) -> str:
-            # essaie d'extraire un libellé lisible depuis col A/B/C...
-            for c in range(0, 11):  # colonnes A..K
+            val = df.iat[ridx, 2] if 2 < df.shape[1] else None
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+            # fallback : essaie A..K
+            for c in range(0, 11):
                 try:
-                    val = df.iat[ridx, c]
-                    if isinstance(val, str) and val.strip():
-                        return val.strip()
+                    v = df.iat[ridx, c]
+                    if isinstance(v, str) and v.strip():
+                        return v.strip()
                 except Exception:
                     pass
             return f"Ligne {ridx+1}"
 
+        # Séries utilitaires (lecture bornée à L..U)
         def _series_from_row(row_idx: int) -> pd.Series:
-            vals = df.iloc[row_idx, col_start:].copy()
-            vals = pd.to_numeric(vals, errors="coerce")
-            vals = vals[year_mask]
-            out = pd.Series(vals.values, index=years.values, name=_row_label(row_idx))
-            return out.dropna()
+            vals = pd.to_numeric(df.iloc[row_idx, COL_L:COL_U], errors="coerce")
+            vals = vals[valid_cols_mask]
+            s = pd.Series(vals.values, index=years, name=_row_label(row_idx))
+            return s.dropna()
 
-        # Séries principales
-        eff_demand = _series_from_row(6)    # ligne 7
-        eff_supply = _series_from_row(21)   # ligne 22
+        # Séries principales (indices 0-based)
+        eff_demand = _series_from_row(6)   # ligne 7
+        eff_supply = _series_from_row(21)  # ligne 22
 
-        av_demand = _series_from_row(11)    # ligne 12
-        av_supply = _series_from_row(19)    # ligne 20
+        av_demand  = _series_from_row(11)  # ligne 12
+        av_supply  = _series_from_row(19)  # ligne 20
 
-        sh_demand = _series_from_row(12)    # ligne 13
-        sh_supply = _series_from_row(20)    # ligne 21
+        sh_demand  = _series_from_row(12)  # ligne 13
+        sh_supply  = _series_from_row(20)  # ligne 21
 
         # Toutes demandes (7→13) et toutes offres (19→24)
-        demand_rows = list(range(6, 13))    # 6..12 (Excel 7..13)
-        supply_rows = list(range(18, 24))   # 18..23 (Excel 19..24)
+        demand_rows = list(range(6, 13))   # 6..12 (Excel 7..13)
+        supply_rows = list(range(18, 24))  # 18..23 (Excel 19..24)
 
         all_demands = {_row_label(r): _series_from_row(r) for r in demand_rows}
         all_supplies = {_row_label(r): _series_from_row(r) for r in supply_rows}
 
+        # Table source intégrale : C + L7:U34
+        raw = df.iloc[ROW_START:ROW_END, COL_L:COL_U].copy()
+        # garde uniquement les colonnes avec années valides
+        raw = raw.loc[:, valid_cols_mask.values]
+        raw.columns = years
+        titles = df.iloc[ROW_START:ROW_END, 2].astype(str).replace({"nan": ""})
+        # fallback si titre vide
+        titles = [t if (isinstance(t, str) and t.strip()) else _row_label(ROW_START+i) for i, t in enumerate(titles)]
+        table_df = raw.copy()
+        table_df.insert(0, "Titre", titles)
+
         return {
+            "sheet_name": sheet_name,
             "years": years,
             "eff_demand": eff_demand, "eff_supply": eff_supply,
             "av_demand": av_demand,   "av_supply": av_supply,
             "sh_demand": sh_demand,   "sh_supply": sh_supply,
             "all_demands": all_demands, "all_supplies": all_supplies,
-            "sheet_name": sheet_name,
+            "table_df": table_df
         }
 
     fv = f"{int(os.path.getmtime(latest_xlsx))}:{latest_xlsx.stat().st_size}"
     data = load_balances_last_sheet(latest_xlsx, fv)
-
     st.caption(f"Feuille lue : **{data['sheet_name']}**")
 
     # -------- Balances (Supply - Demand) --------
     def _balance(supply: pd.Series, demand: pd.Series) -> pd.Series:
-        # aligne les index années et calcule supply - demand
         j = supply.to_frame("s").join(demand.to_frame("d"), how="outer")
         return (j["s"] - j["d"]).dropna()
 
@@ -1349,6 +1362,15 @@ with tabs[8]:
         )
         st.plotly_chart(fig, use_container_width=True)
 
+    # Table des balances (format condensé)
+    balances_df = pd.DataFrame({
+        "Global (Supply−Demand)": eua_balance,
+        "Aviation (Supply−Demand)": av_balance.reindex(eua_balance.index),
+        "Shipping (Supply−Demand)": sh_balance.reindex(eua_balance.index),
+    }).dropna(how="all")
+    st.subheader("Table des balances calculées")
+    st.dataframe(balances_df, use_container_width=True)
+
     st.divider()
 
     # -------- Multi-lignes : Demandes SEULES --------
@@ -1361,7 +1383,7 @@ with tabs[8]:
             x=s.index.astype(str), y=s.values, mode="lines+markers", name=name
         ))
     fig_demands.update_layout(
-        title="Demandes EUA (à partir de la colonne L / ≥ 2021)",
+        title="Demandes EUA (colonnes L→U / années ligne 3)",
         xaxis_title="Année", yaxis_title="MtCO₂e",
         legend=dict(orientation="h"),
         height=520, margin=dict(l=40, r=40, t=60, b=40)
@@ -1381,9 +1403,35 @@ with tabs[8]:
             name=name, line=dict(dash="dash")
         ))
     fig_supplies.update_layout(
-        title="Offres EUA (à partir de la colonne L / ≥ 2021)",
+        title="Offres EUA (colonnes L→U / années ligne 3)",
         xaxis_title="Année", yaxis_title="MtCO₂e",
         legend=dict(orientation="h"),
         height=520, margin=dict(l=40, r=40, t=60, b=40)
     )
     st.plotly_chart(fig_supplies, use_container_width=True)
+
+    # -------- Table source intégrale (C + L7:U34) --------
+    st.subheader("Table source (Titres = Colonne C, Données = L7:U34)")
+    st.dataframe(data["table_df"], use_container_width=True)
+
+    # Exports pratiques
+    cdl, cex = st.columns(2)
+    with cdl:
+        st.download_button(
+            "Télécharger la table source (CSV)",
+            data=data["table_df"].to_csv(index=False).encode("utf-8"),
+            file_name="EUA_balances_table_L7_U34.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+    with cex:
+        buf = io.BytesIO()
+        with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+            data["table_df"].to_excel(writer, index=False, sheet_name="L7_U34")
+        st.download_button(
+            "Télécharger la table source (Excel)",
+            data=buf.getvalue(),
+            file_name="EUA_balances_table_L7_U34.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+        )
